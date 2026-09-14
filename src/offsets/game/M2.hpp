@@ -1637,12 +1637,31 @@ namespace wxl::offsets::game::m2
     /// args, caller-cleaned: (width, height, format, usage, flags, owner, filler, name, one). The
     /// name is a literal the caller supplies, which is what lets one creation be told from another.
     constexpr uintptr_t kTextureCreateSized                = 0x004B9200;
-    /// Names the rectangle of a texture that is about to be sent to the card.
-    /// __cdecl: (handle, one, zero, left, top, right, bottom, one). The section walk asks for the
-    /// whole sheet as (0, 0, resolution, resolution) -- square, from the one figure, which a layout
-    /// that is not square overruns.
+    /// The two section walks: they paint every dirty region of the composite and hand each painted
+    /// rectangle to the card. Both are __fastcall with the component in ecx and no stack args, and
+    /// both end a FULL rebuild -- kCharRebuildSheet set on the component -- by uploading
+    /// (0, 0, resolution, resolution) and returning, skipping the per-region uploads entirely. That
+    /// rectangle is the one square figure on both axes, so under a composite that is not square
+    /// everything outside it is composed correctly in the CPU image and never reaches the sheet
+    /// texture. The per-region uploads need no such correction: they read the live region table,
+    /// which already holds whatever arrangement the composite is painted in.
+    ///
+    /// This one runs from the per-frame render prep.
+    constexpr uintptr_t kCharPrepSections                  = 0x004EE0D0;
+    /// The same walk for a composition request that has come back from the composition thread,
+    /// reached from the per-frame component update -- so on the thread that owns the device, not on
+    /// the composition thread. Its full-rebuild branch is the same square upload.
+    constexpr uintptr_t kCharUpdateSections                = 0x004E9510;
+    /// Resolves a texture handle to the card-side texture, and takes NO rectangle:
+    /// __cdecl, 3 stack args, (handle, mode, callback), called as (handle, 1, 0) by everything that
+    /// composes. The rectangle visible at the section walks' call sites belongs to the update below,
+    /// whose arguments are pushed first and cleaned separately -- `add esp, 0x0C` for this call and
+    /// `add esp, 0x18` for that one. A decompiler folds the two argument lists into this one.
     constexpr uintptr_t kTextureGetGxTex                   = 0x004B6CB0;
-    /// Sends the rectangle named above to the card. __cdecl, 1 stack arg.
+    /// Marks a rectangle of that texture for upload to the card. __cdecl, 6 stack args,
+    /// caller-cleaned: (gxTex, left, top, right, bottom, immediate), stored as
+    /// {top, left, bottom, right} and handed to the device. A dirty region is named as
+    /// (x, y, x + w, y + h); a full rebuild as (0, 0, resolution, resolution).
     constexpr uintptr_t kGxTexUpdate                       = 0x00681F20;
     /// Texture cache entry. The six bytes from kOffTexEntryWidth are also what both copies receive as
     /// their "description" argument, laid out exactly as they are here.

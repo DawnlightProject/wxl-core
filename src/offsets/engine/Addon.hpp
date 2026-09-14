@@ -75,16 +75,17 @@ namespace wxl::offsets::engine::addon
     /// kSignatureFileSize; uppercase the base name; kVerifySignatureBlob; keep the leading 16 bytes;
     /// kComputeInterfaceDigest over the real files; compare the two digests four bytes at a time.
     ///
-    /// Ghidra types the return void, but every caller tests eax against 3 and dispatches through
-    /// kSignatureStatusJumpTable, so it answers with a status.
+    /// IT ALWAYS RETURNS 3. Every exit ends on `mov eax, 3`: the missing or wrong-sized .sig at
+    /// 0x0081663B, the failed blob verify at 0x00816694, and 0x0081675F, which clobbers the digest
+    /// comparison the function has just computed. The statuses below are therefore unreachable in
+    /// this build, and no signature this function sees can make it refuse anything.
     constexpr uintptr_t kCheckSignature = 0x008165E0;
 
-    /// Its arguments as CGGameUI::Initialize pushes them (0x0052ABB2..0x0052ABD1). The stack is cleaned
-    /// with `add esp, 0x18` -- six dwords -- of which four are legible at the call site. The leading two
-    /// are NOT identified, so the type stays untyped past what is proven.
-    using CheckSignatureFn = int(__cdecl*)(/* unidentified */ uint32_t, uint32_t, const char* tocPath,
-                                           const char* bindingsPath, const uint8_t* publicKey,
-                                           void* out);
+    /// Four arguments, identical at both call sites -- CGGameUI::Initialize (0x0052ABB2) and the addon
+    /// loop in SetAddOnInfoRequest (0x005F7B41). `out` receives kComputeInterfaceDigest's 16 bytes, and
+    /// only on the path where the blob verified; that omission is what the caller's comparison detects.
+    using CheckSignatureFn = int(__cdecl*)(const char* tocPath, const char* bindingsPath,
+                                           const uint8_t* publicKey, uint8_t* out);
 
     /// MD5 over the manifest and the files it lists, then over one further file the caller names.
     constexpr uintptr_t kComputeInterfaceDigest = 0x008164D0;
@@ -123,7 +124,13 @@ namespace wxl::offsets::engine::addon
     // --- statuses ---------------------------------------------------------------------------------
     // Read at kSignatureStatusJumpTable: its four entries are 0x0052ABE5, 0x0052ABF2, 0x0052ABFF and
     // 0x0052AC1C, and `ja` sends anything above 3 to 0x0052AC12. So 0, 1 and 2 are the failures below;
-    // 3 and above print nothing.
+    // 3 and above print nothing. kCheckSignature returns none of 0, 1 or 2, so these are dead here.
+    //
+    // WHAT A 3 COSTS AN ADDON. SetAddOnInfoRequest answers a 3 with `record[0x24] = 0`, and LoadAddOn
+    // (0x005F80B0) reads a zero there as "compare the digests": it MD5s the files it loads and checks
+    // them against record+0x1D2, which kCheckSignature filled only if the blob verified. So a
+    // `## Secure: 1` addon with an unverifiable signature reaches ClientPostClose(10), and the client
+    // reports the interface as corrupt -- naming FrameXML for a failure that belongs to the addon.
     constexpr uintptr_t kSignatureStatusJumpTable = 0x0052AEB4;
     constexpr uintptr_t kMsgFrameXmlNoSignature   = 0x00A02FB0;  // 0, "FrameXML missing signature"
     constexpr uintptr_t kMsgFrameXmlBadSignature  = 0x00A02F90;  // 1, "FrameXML has corrupt signature"
