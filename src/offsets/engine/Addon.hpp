@@ -21,7 +21,7 @@ namespace wxl::offsets::engine::addon
 {
     // --- the scheme -------------------------------------------------------------------------------
     //
-    //   D     = MD5( manifest bytes || every file the manifest lists, in manifest order )
+    //   D     = MD5( manifest bytes || the files of its LOAD TREE, in load order )
     //   m     = SHA1( D || uppercased base name of the .sig )        e.g. "FRAMEXML.TOC.SIG"
     //   buf   = kSignaturePadByte x 256, then m over the head, then kSignaturePadTerminator last
     //   block = buf ^ exponent (mod key)
@@ -30,13 +30,17 @@ namespace wxl::offsets::engine::addon
     // Every bignum is LITTLE-ENDIAN -- SBig's convention -- for the key as it sits in .rdata, the block
     // as it sits in the file, and the buffer alike.
     //
-    // VERIFIED three ways against the shipped files: raising FRAMEXML.TOC.SIG's block to the public
-    // exponent returns exactly that buffer (235 of its 236 padding bytes are 0xBB, the last is 0x0B);
-    // plain SHA-1 of (D || "FRAMEXML.TOC.SIG") reproduces the recovered digest; and
-    // MD5(toc || the three listed files) reproduces D in BLIZZARD_ACHIEVEMENTUI.TOC.SIG.
+    // THE LOAD TREE, NOT THE MANIFEST. A covered .xml is followed immediately by the files its
+    // <Script file=> and <Include file=> name, recursively, in document order. Blizzard_ArenaUI.toc
+    // lists two files but its D covers four, the third reached through a <Script>. Two consequences:
+    // nothing is DE-DUPLICATED (Blizzard_CombatLog hashes one file's bytes twice, because its .toc and
+    // its .xml both name it), and a reference that resolves to nothing beside the referring file is
+    // SKIPPED rather than refused (Blizzard_InspectUI includes an .xml that only exists under FrameXML).
     //
-    // The in-game interface appends one further file to D -- the second path the caller names, which is
-    // Bindings.xml. So editing any listed file invalidates the signature, which is the point.
+    // FrameXML alone appends one further file after its tree -- Interface\FrameXML\Bindings.xml, the
+    // second path the caller names, which its manifest never mentions. GlueXML needs no such addition,
+    // so this belongs to FrameXML and not to root manifests in general.
+    //
     //
     // SHA-1 HERE IS TEXTBOOK SHA-1. The export names the finaliser SHA1Broken and that is a misnomer:
     // kSha1Prepare loads the standard IV, the expansion keeps its rol-1 over
