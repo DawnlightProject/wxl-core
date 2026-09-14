@@ -1595,8 +1595,18 @@ namespace wxl::offsets::game::m2
     /// else silently paints nothing.
     constexpr size_t kOffSourceDescMode = 5;
     constexpr uint8_t kSourceModeOpaque       = 0; ///< no alpha: the whole rectangle is overwritten
-    constexpr uint8_t kSourceModeMasked       = 1; ///< one alpha bit, taken from the source byte
+    /// One alpha bit per pixel, in a plane of its own after the index plane: the pixel is written
+    /// opaque or it is left alone. Reducing, that is a test and nothing more; magnifying, the bit is
+    /// expanded to 0 or 255, averaged across the seams like any other channel and then weighed.
+    constexpr uint8_t kSourceModeMasked       = 1;
+    /// Four alpha bits per pixel, two to a byte in that same trailing plane, low nibble first. Each
+    /// nibble is expanded to `n | n << 4` before it weighs anything, which is why this mode and the
+    /// one below share their arithmetic once a source's alpha is a byte.
     constexpr uint8_t kSourceModeBlend        = 4;
+    /// One alpha byte per pixel in that trailing plane. Both weighted modes combine as
+    /// `(source * a + destination * (255 - a)) >> 8` per channel -- a shift by eight over weights
+    /// that run to 255, so an opaque source pixel lands one part in 256 short of itself -- and state
+    /// the destination's own alpha as 255.
     constexpr uint8_t kSourceModeIndexedAlpha = 8;
     /// The source's palette, or null. Both copies resolve it BEFORE looking at anything else, and a
     /// source that has none is dropped there: the magnifying copy returns outright, the reducing one
@@ -1706,7 +1716,12 @@ namespace wxl::offsets::game::m2
     /// Component fields the load above writes.
     constexpr size_t kOffCharComponentRace    = 0x18;
     constexpr size_t kOffCharComponentSex     = 0x1C;
-    constexpr size_t kOffCharComponentDirty   = 0x0C;  ///< bitmask, one bit per region
+    /// Bitmask, one bit per region: the regions the composition still owes a repaint. The section
+    /// walk tests it region by region and reaches a region's painter ONLY for a set bit, so a region
+    /// whose bit is clear is not painted at all, whatever sources it holds. The walk's caller clears
+    /// the whole mask the moment the walk returns, so the mask can only be read from inside one --
+    /// after that it is zero and says nothing about the pass that just ran.
+    constexpr size_t kOffCharComponentDirty   = 0x0C;
     /// int[]: the loaded texture handle per (slot + sectionType * kSectionSlotCount).
     /// The composited sheet itself, once created. Zero until then, and the allocation is skipped for
     /// a component that already has one -- which is what makes a sheet outlive the rebuild that built
