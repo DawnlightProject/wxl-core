@@ -56,9 +56,21 @@ namespace wxl::offsets::game::m2
     using M2_BuildBatchMaterialFn = void* (__fastcall*)(void* model, void* edx, void* batchPtr);
 
     // Version-gate branches in the loader. The stock loader accepts only one inner version; these are
-    // the two compare branches that reject higher inner versions.
+    // the two compare branches that reject higher inner versions. Both read the MODEL body's inner
+    // version (body+0x04) and demand exactly 264, so a body that states anything else is refused.
     constexpr uintptr_t kVersionGateInit = 0x0083CF51; // version-too-high branch
+    // Inside kInitLowPrioritySequence: the gate a body must pass for a loaded .anim to be bound into
+    // its sequence's track slots at all. Past it, that function rebases the slots of one sequence
+    // index and CM2Shared__FinishLoadingLowPrioritySequence (0x0083CA90) then walks the aliasNext ring
+    // from it, rebasing every other member of the ring with the same buffer.
     constexpr uintptr_t kVersionGateAnim = 0x0083C745; // anim-parse version branch
+    // Binds a loaded .anim buffer into one sequence index's track slots: re-runs the header walk with
+    // the sequence index and the buffer in globals 0xAF59D8 / 0xD41258, which makes every plain-array
+    // reader a no-op and every per-sequence track slot of that index rebase onto the buffer.
+    constexpr uintptr_t kInitLowPrioritySequence = 0x0083C6E0;
+    // Builds the companion-file name for a sequence and queues the read. Follows aliasNext while the
+    // sequence's flags carry 0x40, so an alias asks for the file of the ring member that has the keys.
+    constexpr uintptr_t kLoadLowPrioritySequence = 0x0083DA10;
 
     // --- native modern-M2 direct-fill entry points (features/m2native) ---
     // The half of kInit that runs AFTER the header offset->pointer walk. Chooses the skin profile
