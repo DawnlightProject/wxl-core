@@ -92,6 +92,31 @@ namespace wxl::offsets::engine::addon
     // Public exponent, read at 0x00A4421C as `01 00 01 00`.
     constexpr uint32_t kSignatureExponent = 65537;
 
+    // --- the scheme, end to end ------------------------------------------------------------------
+    // kSignatureUpdate is a SLIDING WINDOW, not a plain hash update: it hashes everything it is given
+    // EXCEPT the trailing kSignatureCtxBlobSize bytes, which it retains as the blob. kVerifySignatureBlob
+    // therefore feeds, in this order (bytes read at 0x0081658A, 0x008165A4 and the third call):
+    //
+    //   1. the .sig's first 16 bytes            -- 276 - 260, so exactly the MD5
+    //   2. the UPPERCASED .sig file name        -- e.g. "FRAMEXML.TOC.SIG"
+    //   3. the remaining 260 bytes              -- magic + RSA block, retained, never hashed
+    //
+    // so the signed message is  SHA1Broken( MD5 || UPPERCASED_FILE_NAME )  and the padded buffer is
+    //
+    //   buffer[0 .. 19]   the 20-byte SHA1Broken digest
+    //   buffer[20 .. 254] kSignaturePadByte
+    //   buffer[255]       kSignaturePadTerminator
+    //
+    // VERIFIED, not inferred: raising FRAMEXML.TOC.SIG's block to kSignatureExponent modulo the key
+    // returns that exact buffer -- 235 of the 236 padding bytes are 0xBB and the last is 0x0B.
+    // Every bignum here is LITTLE-ENDIAN (SBig's convention): the modulus as it sits in .rdata, the
+    // signature block as it sits in the file, and the recovered buffer alike.
+    //
+    // To sign, then: take the MD5, hash it with the uppercased name, lay the digest into a 0xBB buffer
+    // with the 0x0B terminator, raise it to the private exponent, and write
+    // [MD5][kSignatureMagic][block]. SHA1Broken has to be reimplemented -- it is Storm's deviant
+    // SHA-1 and no standard library produces it.
+
     // What the verifier demands of the blob, all read off kSignatureVerify:
     //   *(uint32*)blob == kSignatureMagic, else it refuses before doing any maths
     //   memset(buffer, kSignaturePadByte, modulusBytes)
