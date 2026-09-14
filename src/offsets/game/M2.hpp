@@ -1549,7 +1549,18 @@ namespace wxl::offsets::game::m2
     /// with its own region index, and it returns without painting when the source carries no mip
     /// chain -- a test it makes before looking at the source in any other way. It then reads mip
     /// LEVEL 1, so the chain is where the pixels come from, not an optimisation. __cdecl.
+    /// It reads the source at the region's OWN corner, so the source it expects covers the whole
+    /// sheet and the region is a window onto it. It also clears the alpha-bit byte of its description
+    /// copy before either paste, which forces the opaque blit whatever the source actually carries.
+    /// The source level it asks for is found by halving the source width until it equals the sheet
+    /// resolution, counting the steps -- a width that is not a power-of-two multiple of that figure
+    /// never reaches the equality. __cdecl: (regionIndex, source, destLevels).
     constexpr uintptr_t kCharPaintRegion                   = 0x004F07D0;
+    /// The sibling copy, for a source authored AS the region: it reads from (0, 0) instead, and its
+    /// level search halves the source width down to the region's width rather than the sheet's. It
+    /// leaves the alpha-bit byte alone, so this is the one that can reach the masked, blend and
+    /// indexed-alpha blits. __cdecl, same arguments.
+    constexpr uintptr_t kCharPaintRegionFromOrigin         = 0x004F08A0;
     /// The mip-chain test that gate rests on. __cdecl, 1 stack arg.
     constexpr uintptr_t kTextureCacheHasMips               = 0x004F2D80;
     /// Copies one block of a source texture into the sheet, MAGNIFYING it by two: the source is read
@@ -1564,6 +1575,29 @@ namespace wxl::offsets::game::m2
     /// large body skin here and the smaller face and scalp sources to the magnifying copy above.
     /// __cdecl, same arguments plus that starting level.
     constexpr uintptr_t kCharPasteScale                    = 0x004EC550;
+    /// The opaque blit the magnifying copy delegates to, and where that copy's palette test actually
+    /// lives: it resolves the palette itself and RETURNS having written nothing when there is none.
+    /// So the two copies fail differently on a source they cannot read -- an untouched region here,
+    /// flat green from the fill below -- and a replacement has to cover both.
+    /// It doubles source level 0 into destination level 0, then hands the rest of the chain to the
+    /// one-for-one blit with every rectangle, the pitch and the source origin halved once, and the
+    /// destination level index offset by one.
+    /// __cdecl: (source, destLevels, destOrigin, destPitch, sourceOrigin, size, description).
+    constexpr uintptr_t kCharPasteOpaque                   = 0x004E89F0;
+    /// What the reducing copy calls instead when the source has no palette. It is not even handed the
+    /// source: its whole body writes 0xFF00FF00 per pixel, an opaque GREEN, over every level of the
+    /// region. A green body on screen is this, and it is why a source that is not palettised has to be
+    /// intercepted rather than left to fail quietly.
+    /// __cdecl: (destLevels, destOrigin, destPitch, size, description, firstLevel, -firstLevel).
+    constexpr uintptr_t kCharPasteNoPalette                = 0x004E82D0;
+    /// Byte 5 of the six-byte description both copies receive, which is kOffTexEntryAlphaBits seen
+    /// through that description. It selects the blit, and only the four values below exist; anything
+    /// else silently paints nothing.
+    constexpr size_t kOffSourceDescMode = 5;
+    constexpr uint8_t kSourceModeOpaque       = 0; ///< no alpha: the whole rectangle is overwritten
+    constexpr uint8_t kSourceModeMasked       = 1; ///< one alpha bit, taken from the source byte
+    constexpr uint8_t kSourceModeBlend        = 4;
+    constexpr uint8_t kSourceModeIndexedAlpha = 8;
     /// The source's palette, or null. Both copies resolve it BEFORE looking at anything else, and a
     /// source that has none is dropped there: the magnifying copy returns outright, the reducing one
     /// calls a fill that is not even handed the source. Neither ever reaches its format dispatch. So
@@ -1633,6 +1667,16 @@ namespace wxl::offsets::game::m2
     /// and only when those are enabled.
     constexpr uintptr_t kCharComposeImageCompressed        = 0x00B6B86C;
     constexpr uintptr_t kCharComposeImageThreaded          = 0x00B6B868;
+    /// One-time character-component setup, and the ONLY place the three images above are allocated.
+    /// It clamps its resolution argument to [6, 9] (and to 8 without compression), sets the sheet
+    /// resolution figure to 1 << n, derives the region arrangement from the shipped one as
+    /// `master >> (9 - n)`, then allocates the images square at that figure. Every allocation it
+    /// reaches -- including the composition requests' own images, through the threaded setup it calls
+    /// -- asks for exactly (figure, figure), which is what lets a different geometry be recognised
+    /// there. Called once at CVar registration, so a geometry meant to change those images has to be
+    /// set before that.
+    /// __cdecl: (gxFormat, resolution, threaded, compressed).
+    constexpr uintptr_t kCharComponentInitialize           = 0x004F1A20;
     /// Allocates one such image. __cdecl: (pixelFormat, width, height) -- two dimensions, unlike the
     /// figure the client fills them from.
     constexpr uintptr_t kTextureAllocMippedImg             = 0x004B7220;
