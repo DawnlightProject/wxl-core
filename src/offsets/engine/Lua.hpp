@@ -49,6 +49,44 @@ namespace wxl::offsets::engine::lua
     constexpr uintptr_t kFrameScriptExecute = 0x00819210;
     using FrameScriptExecuteFn = void(__cdecl*)(const char* source, void* state);
 
+    // --- stack and table primitives ---
+    // The pseudo-indices, as every call site in the binary spells them: LUA_REGISTRYINDEX is the
+    // literal 0xFFFFD8F0 and LUA_GLOBALSINDEX the literal 0xFFFFD8EE, both visible in
+    // FrameScript_Object::RegisterScriptObject (0x00819880) -- -10000 and -10002, Lua 5.1's values.
+    constexpr int kRegistryIndex = -10000;
+    constexpr int kGlobalsIndex  = -10002;
+
+    // lua_type results. Only the two this codebase distinguishes are named.
+    constexpr int kTypeNil   = 0;
+    constexpr int kTypeTable = 5;
+
+    constexpr uintptr_t kLuaSetTop = 0x0084DBF0;
+    using LuaSetTopFn = void(__cdecl*)(void* state, int index);
+
+    constexpr uintptr_t kLuaType = 0x0084DEB0;
+    using LuaTypeFn = int(__cdecl*)(void* state, int index);
+
+    constexpr uintptr_t kLuaPushValue = 0x0084DE50;
+    using LuaPushValueFn = void(__cdecl*)(void* state, int index);
+
+    // Pops the key, pushes the value, no metatable.
+    constexpr uintptr_t kLuaRawGet = 0x0084E600;
+    using LuaRawGetFn = void(__cdecl*)(void* state, int tableIndex);
+
+    // Pushes t[n], no metatable. How a registry reference is turned back into its value --
+    // CScriptRegion::LoadXML reaches a frame's Lua table this way, at 0x004886DA, having pushed the
+    // object's ref and the literal 0xFFFFD8F0.
+    constexpr uintptr_t kLuaRawGetI = 0x0084E670;
+    using LuaRawGetIFn = void(__cdecl*)(void* state, int tableIndex, int n);
+
+    // Pops value then key, no metatable.
+    constexpr uintptr_t kLuaRawSet = 0x0084E970;
+    using LuaRawSetFn = void(__cdecl*)(void* state, int tableIndex);
+
+    // Pops the key, pushes key and value, or nothing and returns 0 at the end of the table.
+    constexpr uintptr_t kLuaNext = 0x0084EF50;
+    using LuaNextFn = int(__cdecl*)(void* state, int tableIndex);
+
     // Verifies that an indirect callback lies in Wow.exe's .text section before Lua invokes it.
     constexpr uintptr_t kValidateFunctionPointer = 0x0086B5A0;
     using ValidateFunctionPointerFn = void(__cdecl*)(uintptr_t function);
