@@ -141,6 +141,9 @@ namespace wxl::structure::m2
     constexpr uint32_t kTexTypeHardcoded = 0;
     constexpr uint32_t kTexTypeObjectSkin = 2;
     constexpr uint32_t kTexTypeWeaponBlade = 3;
+    // Character hair and facial hair. Never named by the file: the character code hands the handle to
+    // the model's texture-replace entry, which writes it at every texture index of this type.
+    constexpr uint32_t kTexTypeCharHair = 6;
 
     /**
      * @brief One render batch (texunit), 0x18 bytes.

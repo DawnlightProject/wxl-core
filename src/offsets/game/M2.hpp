@@ -1547,8 +1547,8 @@ namespace wxl::offsets::game::m2
     constexpr uintptr_t kTextureCacheRelease               = 0x004F31A0;
     /// Paints one region of the sheet from a source texture. Every region painter is a call to this
     /// with its own region index, and it returns without painting when the source carries no mip
-    /// chain -- a test it makes before looking at the source in any other way. It then reads mip
-    /// LEVEL 1, so the chain is where the pixels come from, not an optimisation. __cdecl.
+    /// chain -- a test it makes before looking at the source in any other way, so the chain is where
+    /// the pixels come from and not an optimisation.
     /// It reads the source at the region's OWN corner, so the source it expects covers the whole
     /// sheet and the region is a window onto it. It also clears the alpha-bit byte of its description
     /// copy before either paste, which forces the opaque blit whatever the source actually carries.
