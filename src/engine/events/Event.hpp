@@ -64,6 +64,7 @@ namespace wxl::events
         OnGrassWind,     // grass wind integrator advanced this frame (GrassWindArgs)
         OnAdtHeightBlend,// a terrain PS permutation was patched for height blending (AdtHeightBlendArgs)
         OnM2NativeLoad,  // a modern MD21 model was direct-filled by the native reader (M2NativeLoadArgs)
+        OnPacketReceived,// an inbound server message reached the dispatcher (PacketReceivedArgs)
         Count
     };
 
@@ -262,6 +263,33 @@ namespace wxl::events
      *        stockBytes/patchedBytes are the bytecode sizes before/after the injection. Read-only.
      */
     struct AdtHeightBlendArgs { uint32_t layerCount; uint32_t stockBytes; uint32_t patchedBytes; };
+    /**
+     * @brief Args for OnPacketReceived: one inbound server message, before the client dispatches it.
+     *
+     * Published from NetClient::ProcessMessage, which NETEVENTQUEUE::Poll drains on the main thread,
+     * so a handler runs on the game thread with the message still intact.
+     *
+     * It fires for EVERY opcode, including the ones the client has no handler for. That matters: the
+     * dispatcher only consults its handler table for opcodes below 0x51F, and quietly discards
+     * everything else through CDataStore::Reset. A custom opcode a server and a patched client agree
+     * on is only reachable here.
+     *
+     * packet is the message's CDataStore with its read cursor positioned past the opcode, so a
+     * subscriber reads the payload from byte zero through wxl::game::net. The cursor is restored
+     * before the client's own handler runs, so reading here costs the stock path nothing.
+     *
+     * Setting *handled true suppresses the client's own dispatch of this message and nothing else.
+     * handled is never null and starts false. connection is the WowConnection it arrived on, which is
+     * not necessarily the active one.
+     */
+    struct PacketReceivedArgs
+    {
+        uint32_t opcode;
+        void*    packet;
+        void*    connection;
+        void*    client;      ///< the NetClient/ClientConnection the message is being dispatched on
+        bool*    handled;
+    };
 
     using Handler = void (*)(void* user, const void* args);
 

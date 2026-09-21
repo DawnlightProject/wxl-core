@@ -246,4 +246,37 @@ namespace wxl::game::world
         out[1] = *reinterpret_cast<float*>(woff::kFocusPosY);
         out[2] = *reinterpret_cast<float*>(woff::kFocusPosZ);
     }
+
+    /**
+     * @brief Raises the loading screen over everything, world included.
+     *
+     * The screen is a screen layer at depth 9.0, not a glue-screen frame, so this is legal in world:
+     * it is what the client's own SMSG_TRANSFER_PENDING handler does. Pass the map the backdrop
+     * should be chosen for -- MapId() is the honest answer when the destination map is not known yet.
+     * @param mapId   map whose LoadingScreens.dbc row supplies the backdrop.
+     * @param forced  nonzero to raise it even where the client would have skipped it.
+     */
+    inline void ShowLoadingScreen(int mapId, bool forced = true)
+    {
+        Native<woff::ClearClientControlsFn>(woff::kClearClientControls)();
+        Native<woff::LoadingScreenEnableFn>(woff::kLoadingScreenEnable)(mapId, forced ? 1 : 0);
+    }
+
+    /**
+     * @brief Dismisses the loading screen.
+     *
+     * Rarely needed after ShowLoadingScreen for a world change: the client dismisses it itself the
+     * moment the active player object is built out of the server's update stream. Call it to give a
+     * failed transition a way out rather than leaving the player staring at a backdrop.
+     */
+    inline void HideLoadingScreen()
+    {
+        Native<woff::LoadingScreenDisableFn>(woff::kLoadingScreenDisable)();
+    }
+
+    /** @brief Reports whether the loading screen layer is currently up. */
+    inline bool LoadingScreenVisible()
+    {
+        return Native<woff::LoadingScreenDrawingFn>(woff::kLoadingScreenDrawing)() != 0;
+    }
 }

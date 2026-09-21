@@ -480,4 +480,25 @@ namespace wxl::offsets::game::world
     /// Per-entity re-link into the map's spatial grid - the place to observe or override where a world
     /// entity is considered to live. __cdecl, caller-cleaned.
     constexpr uintptr_t kMapEntityUpdate                   = 0x007A1BC0;
+
+    // --- calling the loading screen, not just detouring it ---------------------------------------
+    // kLoadingScreenEnable / kLoadingScreenDisable are listed above as hook targets; these are the
+    // signatures and the two companions a caller needs to raise the screen itself.
+    //
+    // It is not a glue-screen frame. It is a ScrnLayer at depth 9.0, above the world and above the
+    // interface, so raising it in world is legal -- the client's own SMSG_TRANSFER_PENDING handler
+    // (0x00403D10) does exactly ClearClientControls + Enable(mapId, 1) from a message handler.
+    /// LoadingScreenEnable(mapId, forced): picks the backdrop from LoadingScreens.dbc by map.
+    using LoadingScreenEnableFn = void(__cdecl*)(int mapId, int forced);
+    /// LoadingScreenDisable(): releases the layer and its textures. The client calls this itself out
+    /// of the active player's initialisation, so a caller that raised the screen for a world change
+    /// usually never has to.
+    using LoadingScreenDisableFn = void(__cdecl*)();
+    /// LoadingScreenDrawing(): nonzero while the layer exists. __cdecl, returns a byte in AL.
+    constexpr uintptr_t kLoadingScreenDrawing = 0x00407E90;
+    using LoadingScreenDrawingFn = char(__cdecl*)();
+    /// CGGameUI::ClearClientControls(): drops movement/spell/targeting input state. What the client's
+    /// own transfer path does immediately before raising the screen. __cdecl.
+    constexpr uintptr_t kClearClientControls  = 0x005194C0;
+    using ClearClientControlsFn = void(__cdecl*)();
 }

@@ -37,6 +37,7 @@
 #include "offsets/game/Doodad.hpp"
 #include "offsets/game/GroundEffect.hpp"
 #include "offsets/game/M2.hpp"
+#include "offsets/game/Net.hpp"
 #include "offsets/game/Unit.hpp"
 #include "offsets/game/Weather.hpp"
 #include "offsets/game/WMO.hpp"
@@ -64,6 +65,7 @@ namespace wxl::runtime::hookpoints
         namespace lua    = wxl::offsets::engine::lua;
         namespace mem    = wxl::offsets::engine::mem;
         namespace m2     = wxl::offsets::game::m2;
+        namespace netoff = wxl::offsets::game::net;
         namespace shoff  = wxl::offsets::engine::shader;
         namespace sky    = wxl::offsets::engine::sky;
         namespace snd    = wxl::offsets::engine::sound;
@@ -451,6 +453,15 @@ namespace wxl::runtime::hookpoints
             { "Unit.ObjectUpdate",                         unit::kObjectUpdateHandler },
             { "Unit.ObjectDestroy",                        unit::kObjectDestroyHandler },
             { "Unit.TargetSet",                            unit::kTargetSet },
+
+            // --- realm connection --------------------------------------------------------------------
+            // The message dispatcher is already republished as events::OnPacketReceived; it is named
+            // here too for an extension that needs to sit at a different position in the chain.
+            { "Net.ProcessMessage",                        netoff::kProcessMessage },
+            { "Net.Connect",                               netoff::kNetClientConnect },
+            { "Net.Disconnect",                            netoff::kNetClientDisconnect },
+            { "Net.ClientConnectionDisconnect",            netoff::kClientConnectionDisconnect },
+            { "Net.SetSelectedRealm",                      netoff::kSetSelectedRealm },
 
             // --- client data tables ------------------------------------------------------------------
             { "Db2.MapLoad",                               db2::mapdef::kLoader },

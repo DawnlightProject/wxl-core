@@ -256,6 +256,22 @@ namespace wxl::game::script
     inline void RawSet(void* state, int tableIndex)
     { Native<off::LuaRawSetFn>(off::kLuaRawSet)(state, tableIndex); }
 
+    /// Raw indexed write: pops the top value and sets t[n]. The mirror of RawGetI.
+    inline void RawSetI(void* state, int tableIndex, int n)
+    { Native<off::LuaRawSetIFn>(off::kLuaRawSetI)(state, tableIndex, n); }
+
+    /**
+     * @brief Pushes a fresh table.
+     * @param arrayHint  expected count of integer keys 1..n.
+     * @param hashHint   expected count of other keys.
+     *
+     * The hints only pre-size the two halves; a table built with 0, 0 grows on the first insert and
+     * behaves identically. This is the only way a binding returns a list to script code: a script
+     * function that answers with a table builds it here, fills it with RawSetI, and returns 1.
+     */
+    inline void NewTable(void* state, int arrayHint = 0, int hashHint = 0)
+    { Native<off::LuaCreateTableFn>(off::kLuaCreateTable)(state, arrayHint, hashHint); }
+
     /**
      * @brief Advances a table walk: pops a key, pushes the next key and its value.
      * @return 0 at the end of the table, having pushed nothing.

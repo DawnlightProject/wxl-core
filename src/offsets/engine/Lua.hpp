@@ -136,6 +136,16 @@ namespace wxl::offsets::engine::lua
     constexpr uintptr_t kLuaRawSet = 0x0084E970;
     using LuaRawSetFn = void(__cdecl*)(void* state, int tableIndex);
 
+    // Pops the value and stores it at t[n], no metatable -- the mirror of lua_rawgeti above. Sits
+    // where lapi.c puts it, immediately after lua_rawset.
+    constexpr uintptr_t kLuaRawSetI = 0x0084EA00;
+    using LuaRawSetIFn = void(__cdecl*)(void* state, int tableIndex, int n);
+
+    // lua_createtable(state, arrayHint, hashHint): builds a table and pushes it. The hints pre-size
+    // its array and hash halves; 0, 0 is the table the client's own callers ask for, grown on insert.
+    constexpr uintptr_t kLuaCreateTable = 0x0084E6E0;
+    using LuaCreateTableFn = void(__cdecl*)(void* state, int arrayHint, int hashHint);
+
     // Pops the key, pushes key and value, or nothing and returns 0 at the end of the table.
     constexpr uintptr_t kLuaNext = 0x0084EF50;
     using LuaNextFn = int(__cdecl*)(void* state, int tableIndex);
