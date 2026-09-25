@@ -1,0 +1,33 @@
+{
+  "manifest": 1,
+
+  "extension": {
+    "id": "wxl-forever",
+    "version": "0.1.0",
+    "abi": "1.1",
+    "entry": "wxl-forever.dll",
+    "assets": [],
+    "requires": {},
+    "conflicts": [],
+
+    "hooks": []
+  },
+
+  "deploy": {
+    "mode": "release",
+    "match": "*.dll"
+  },
+
+  "listing": {
+    "title": "Forever",
+    "tagline": "A render suite for the client. First feature: volumetric fog that rolls, pools and glows.",
+    "description": "store/description.md",
+    "cover": null,
+    "gallery": [],
+    "categories": ["rendering"],
+    "accent": "#8a95a0"
+  },
+
+  "license": "GPL-3.0-or-later",
+  "signature": null
+}
