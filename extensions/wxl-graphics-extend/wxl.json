@@ -1,0 +1,33 @@
+{
+  "manifest": 1,
+
+  "extension": {
+    "id": "wxl-graphics-extend",
+    "version": "0.1.0",
+    "abi": "1.1",
+    "entry": "wxl-graphics-extend.dll",
+    "assets": [],
+    "requires": {},
+    "conflicts": [],
+
+    "hooks": []
+  },
+
+  "deploy": {
+    "mode": "release",
+    "match": "*.dll"
+  },
+
+  "listing": {
+    "title": "Graphics Extend",
+    "tagline": "Shared render plumbing for every graphics extension: INTZ depth, G-buffer, HDR, pass scheduling, DDS, shaders.",
+    "description": "store/description.md",
+    "cover": null,
+    "gallery": [],
+    "categories": ["rendering", "library"],
+    "accent": "#5b7fa6"
+  },
+
+  "license": "GPL-3.0-or-later",
+  "signature": null
+}

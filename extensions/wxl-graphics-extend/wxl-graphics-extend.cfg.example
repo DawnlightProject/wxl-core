@@ -1,0 +1,24 @@
+# wxl-graphics-extend.cfg -- wxl-graphics-extend user configuration.
+#
+# Location: Extensions\wxl-graphics-extend\wxl-graphics-extend.cfg (next to the DLL).
+# Format: KEY=value, one per line. '#' or ';' starts a comment. An environment variable of the same
+# name wins over this file. Booleans: 0/n/f = no, anything else = yes.
+#
+# Every key is shown COMMENTED with its default value: uncomment a line to take control of it.
+
+# ----------------------------------------------------------------------------- World pass targets
+# Allow redirecting the world's depth into an INTZ texture when a pass asks for it.
+#WXL_GFX_DEPTH=1
+# Allow the G-buffer normal target (render target 1 of the world pass) when a pass asks for it.
+#WXL_GFX_NORMALS=1
+# Allow drawing the world into an FP16 target when a pass asks for HDR.
+#WXL_GFX_HDR=1
+
+# ----------------------------------------------------------------------------- Diagnostics
+# Measure every pass's GPU time with timestamp queries (shown in the overlay panel).
+#WXL_GFX_PROFILE=1
+
+# ----------------------------------------------------------------------------- Shaders
+# Keep compiled shaders on disk (Extensions\wxl-graphics-extend\cache) across sessions. Each entry
+# is checked against the current sources on every hit, so a stale one is never used.
+#WXL_GFX_SHADER_DISK_CACHE=1
