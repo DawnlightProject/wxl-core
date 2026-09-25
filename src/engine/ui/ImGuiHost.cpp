@@ -271,6 +271,29 @@ namespace wxl::ui
             if (!label || !buf || bufSize == 0) return 0;
             return ImGui::InputText(label, buf, bufSize) ? 1 : 0;
         }
+
+        int __cdecl BeginTabBar(const char* id)
+        { return (id && ImGui::BeginTabBar(id)) ? 1 : 0; }
+
+        void __cdecl EndTabBar() { ImGui::EndTabBar(); }
+
+        int __cdecl BeginTabItem(const char* label)
+        { return (label && ImGui::BeginTabItem(label)) ? 1 : 0; }
+
+        void __cdecl EndTabItem() { ImGui::EndTabItem(); }
+
+        void __cdecl ItemTooltip(const char* text)
+        {
+            if (!text || !ImGui::IsItemHovered()) return;
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+            ImGui::TextUnformatted(text);
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+
+        void __cdecl TextDisabled(const char* text)
+        { if (text) ImGui::TextDisabled("%s", text); }
     }
 }
 

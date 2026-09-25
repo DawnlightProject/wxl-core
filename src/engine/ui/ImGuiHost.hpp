@@ -62,5 +62,11 @@ namespace wxl::ui
         int  __cdecl Combo(const char* label, int* index, const char* const* items, int count);
         int  __cdecl CollapsingHeader(const char* label);
         int  __cdecl InputText(const char* label, char* buf, size_t bufSize);
+        int  __cdecl BeginTabBar(const char* id);
+        void __cdecl EndTabBar();
+        int  __cdecl BeginTabItem(const char* label);
+        void __cdecl EndTabItem();
+        void __cdecl ItemTooltip(const char* text);
+        void __cdecl TextDisabled(const char* text);
     }
 }

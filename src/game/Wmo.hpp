@@ -175,6 +175,53 @@ namespace wxl::game::wmo
         return static_cast<char*>(root) + off::kOffNameInline;
     }
 
+    /// Group flag bits as the client keeps them in the group-info table.
+    namespace groupflag
+    {
+        constexpr uint32_t kExterior = off::kGroupFlagExterior;
+        constexpr uint32_t kInterior = off::kGroupFlagIndoor;
+    }
+
+    /// One group's entry in its root's group-info table. The box is in the map-object's model space.
+    struct GroupInfo
+    {
+        uint32_t flags;
+        float    bboxMin[3];
+        float    bboxMax[3];
+    };
+
+    /**
+     * @brief Reads a group's flags and model-space bounds from its root's group-info table.
+     * @param root        the map-object root.
+     * @param groupIndex  the group index.
+     * @param out         receives the entry.
+     * @return false when the root is null, not ready yet, or the index is out of range.
+     */
+    inline bool GetGroupInfo(const void* root, uint32_t groupIndex, GroupInfo& out)
+    {
+        if (!root) return false;
+        const auto* base = static_cast<const uint8_t*>(root);
+        if (*reinterpret_cast<const uint32_t*>(base + off::kOffRootGroupInfoReady) == 0) return false;
+        const uint32_t count = *reinterpret_cast<const uint32_t*>(base + off::kOffMogiCount);
+        if (groupIndex >= count) return false;
+        const auto* table = *reinterpret_cast<const uint8_t* const*>(base + off::kOffMogiTable);
+        if (!table) return false;
+        const uint8_t* e = table + size_t(groupIndex) * off::kMogiStride;
+        std::memcpy(&out.flags, e + off::kOffMogiFlags, sizeof out.flags);
+        std::memcpy(out.bboxMin, e + off::kOffMogiBbox, sizeof out.bboxMin);
+        std::memcpy(out.bboxMax, e + off::kOffMogiBbox + 0xC, sizeof out.bboxMax);
+        return true;
+    }
+
+    /**
+     * @brief Signature of the "Wmo.RenderGroup" hook point: one call per WMO group drawn this frame.
+     *
+     * root is the map-object root; worldToModel is the instance's affine inverse placement (4x4,
+     * row-vector, translation in row 3), valid for the frame.
+     */
+    using RenderGroupFn = void(__fastcall*)(void* root, void* edx, uint32_t groupIndex,
+                                            const float* worldToModel, void* views);
+
     /**
      * @brief Reads the live outdoor-render gate value (a WMO/world global, not a per-root/group field).
      *

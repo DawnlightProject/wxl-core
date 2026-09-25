@@ -105,6 +105,35 @@ namespace wxl::game::gx
     inline void* RawGraphicsDevice()
     { return *reinterpret_cast<void**>(off::kGxDevicePtr); }
 
+    /// A viewport depth range: projected depth 0..1 lands in hardware depth minZ..maxZ.
+    struct DepthRange { float minZ; float maxZ; };
+
+    /**
+     * @brief Reads the depth range the world pass draws its geometry into.
+     *
+     * The world is squeezed below the sky's range, so hardware depth is not the projected depth.
+     * minZ is the viewport's current one, which the world pass inherits: read it before the pass.
+     * @return the range, or {0, 1} when graphics is not up.
+     */
+    inline DepthRange WorldDepthRange()
+    {
+        void* g = RawGraphicsDevice();
+        if (!g) return { 0.0f, 1.0f };
+        const float minZ = *reinterpret_cast<const float*>(uintptr_t(g) + off::kDeviceViewportMinZ);
+        const float maxZ = *reinterpret_cast<const float*>(off::kWorldViewportMaxZ);
+        return { minZ, maxZ };
+    }
+
+    /**
+     * @brief Reads the depth range the sky dome and celestials draw into.
+     * @return the range.
+     */
+    inline DepthRange SkyDepthRange()
+    {
+        return { *reinterpret_cast<const float*>(off::kSkyViewportMinZ),
+                 *reinterpret_cast<const float*>(off::kSkyViewportMaxZ) };
+    }
+
     /**
      * @brief Holds the engine's projection and view across a render that overwrites them.
      *

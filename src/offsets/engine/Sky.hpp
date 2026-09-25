@@ -41,6 +41,21 @@ namespace wxl::offsets::engine::sky
     /// so the same product answers both.
     constexpr uintptr_t kInfoDayFraction = 0x04;
     constexpr float     kDayHalfMinutes  = 2880.0f;
+    /// Colours in that block, bytes B, G, R, A: the celestial light's diffuse and the ambient, both
+    /// already faded by the day-night update (CMapStaticEntity::ModelLightingCallback reads them so).
+    constexpr uintptr_t kInfoDiffuseColor = 0x1A8;
+    constexpr uintptr_t kInfoAmbientColor = 0x1AC;
+    /// The stored light direction at 0x19C is the lighting direction, not the sun's place in the sky: its
+    /// azimuth is fixed and its elevation only swings 20..37 degrees (DayNight::SetDirection). The drawn
+    /// bodies sit at these positions instead, 12 units from the sky origin (DayNight::SetPlanets).
+    constexpr uintptr_t kInfoSkyOrigin    = 0x18;  ///< vec3, the viewer position the sky is built around
+    constexpr uintptr_t kInfoSunPosition  = 0x328; ///< vec3, origin + 12 * direction towards the sun
+    constexpr uintptr_t kInfoMoonPosition = 0x348; ///< vec3, origin + 12 * direction towards the moon
+    /// Sun glare, 0..1: the sun disk's occlusion-query pixel ratio, kept at its last value while a query
+    /// is pending. DayNight::Update multiplies the diffuse and ambient above by (1 - kGlareDimming * it)
+    /// every frame, so both flicker with the query when the sun is on screen.
+    constexpr uintptr_t kSunGlare     = 0x00D38F4C;
+    constexpr float     kGlareDimming = 0.35f;
 
     // --- day-night fog override ---
     /// The engine's own mechanism for replacing the zone fog wholesale (its screen effects use
@@ -55,11 +70,23 @@ namespace wxl::offsets::engine::sky
     using ClearOverrideFogFn = void(__cdecl*)();
     /// The live fog colour (u32) the day-night update computed for this frame.
     constexpr uintptr_t kFogColor = 0x00D38BF4;
+    /// The resolved day-night colour set (u32 0xAARRGGBB each), in LightIntBand order: 0 diffuse,
+    /// 1 ambient, 2 sky top, 3 sky middle, 4 sky band 1, 5 sky band 2, 6 sky smog (horizon),
+    /// 7 shadow, 8 fog (kFogColor), 9 sun. Pinned by its live readers: entry 8 is the fog colour the
+    /// engine reads everywhere, entry 9 is copied into the sun and moon draw colours at the end of
+    /// DayNight::SetColors.
+    constexpr uintptr_t kSkyColors = 0x00D38BD4;
+    constexpr int kSkyColorTop     = 2;
+    constexpr int kSkyColorMiddle  = 3;
+    constexpr int kSkyColorHorizon = 6;
     /// Sky-draw gate (u32): the override WRITES this from its skyGate argument, and the whole
     /// sky -- dome, clouds, celestials, skybox -- draws only while it is nonzero. The engine's
     /// own screen effect passes zero because a dead world wants no sky; an override that only
     /// wants the fog out of the way must pass the gate's current value back through.
     constexpr uintptr_t kSkyDrawGate = 0x00D38CCC;
+    /// u32, non-zero while an override is installed. SetOverrideFog saves the live fog only when this is
+    /// zero, so installing it again every frame keeps the saved fog intact.
+    constexpr uintptr_t kOverrideFogActive = 0x00D38AD0;
 
     /// __cdecl(void* htexture, int, int) -> CGxTex*, called as (handle, 1, 0).
     constexpr uintptr_t kTextureGetGxTex = 0x004B6CB0;

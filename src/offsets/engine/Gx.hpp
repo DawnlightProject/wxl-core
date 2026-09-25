@@ -78,6 +78,9 @@ namespace wxl::offsets::engine::gx
     constexpr size_t    kFormatHeight    = 0x1D4; // active format height (backbuffer px, unscaled)
     constexpr size_t    kViewportDirty   = 0xF6C; // set to 1 to force a viewport recompute from curWindow
     constexpr size_t    kRtOverrideField = 0x2918; // non-zero while an offscreen RT override is active (not the backbuffer pass)
+    // Non-zero replaces kDepthSurfaceField in every render-target bind; with kRtOverrideField set the
+    // bind takes +0x3B38 instead. Either one means a depth redirect through kDepthSurfaceField is ignored.
+    constexpr size_t    kRtDepthOverrideField = 0x2924;
     // Master switches, one bit per rendering category, read by the device's master-enable check. Bit 8
     // off is what makes the world scene clear to opaque black instead of the horizon colour.
     constexpr size_t    kMasterEnableField = 0x2758;
@@ -197,6 +200,7 @@ namespace wxl::offsets::engine::gx
     constexpr size_t kGxBatchMinIndex   = 0x0C; // uint16
     constexpr size_t kGxBatchMaxIndex   = 0x0E; // uint16
     constexpr size_t kGxDeviceVertexStream = 0x2870; // -> the bound vertex stream buffer
+    constexpr size_t kGxDeviceIndexStream  = 0x28BC; // -> the bound index buffer (set by PrimIndexPtr)
     constexpr size_t kGxBufStreamOffset    = 0x18;   // uint32, in bytes
     constexpr size_t kGxBufStreamStride    = 0x0C;   // uint32
     /// Non-zero selects a path that passes a base vertex of zero instead of deriving one, so the
@@ -247,6 +251,16 @@ namespace wxl::offsets::engine::gx
     // built. A scene drawn for a frame the engine did not build wants this half and not that one.
     constexpr uintptr_t kWorldOnRender = 0x004F8EA0;
     using WorldOnRenderFn = void(__fastcall*)(void* worldFrame, void* edx);
+
+    // Viewport depth range on the graphics-device object (floats), as GxXformViewport reads them.
+    constexpr size_t    kDeviceViewportMinZ = 0xF80;
+    constexpr size_t    kDeviceViewportMaxZ = 0xF84;
+    // kWorldOnRender draws the world with viewport MinZ = the inherited kDeviceViewportMinZ and
+    // MaxZ = this float (0.94 in the image), so depth past it belongs to the sky alone.
+    constexpr uintptr_t kWorldViewportMaxZ = 0x00ADEEE4;
+    // The sky dome and celestials draw with MinZ/MaxZ from this pair (0.999 / 1.0 in the image).
+    constexpr uintptr_t kSkyViewportMinZ   = 0x00ADEEF0;
+    constexpr uintptr_t kSkyViewportMaxZ   = 0x00ADEEF4;
 
     constexpr uintptr_t kWorldRenderFinalize = 0x004FAF90;
     constexpr uintptr_t kWorldRenderEpilogueAnchor = 0x004FB074; // landmark only, do NOT hook

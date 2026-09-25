@@ -68,11 +68,22 @@ namespace wxl::game::dbc
         bool     Loaded() const     { return m_rowCount != 0; }
         uint32_t RowCount() const   { return m_rowCount; }
         uint32_t FieldCount() const { return m_fieldCount; }
+        uint32_t RowSize() const    { return m_rowSize; }
+
+        /// True when field N really is the N-th dword of a row. False for a table that packs
+        /// columns below a dword, where U32 and F32 answer 0 and Row() is the only way in.
+        bool DwordAddressable() const { return m_rowSize >= uint64_t(m_fieldCount) * 4; }
+
+        /// The raw bytes of a row, RowSize() long, or null. The way into a packed table.
+        const uint8_t* Row(uint32_t row) const
+        {
+            return row < m_rowCount ? &m_rows[size_t(row) * m_rowSize] : nullptr;
+        }
 
         /// The raw word at (row, field), or 0 when either is out of range.
         uint32_t U32(uint32_t row, uint32_t field) const
         {
-            if (row >= m_rowCount || field >= m_fieldCount) return 0;
+            if (row >= m_rowCount || field >= m_fieldCount || !DwordAddressable()) return 0;
             uint32_t value = 0;
             std::memcpy(&value, &m_rows[row * m_rowSize + field * 4], 4);
             return value;
@@ -119,8 +130,11 @@ namespace wxl::game::dbc
             const uint32_t rowSize    = header[2];
             const uint32_t stringSize = header[3];
 
-            // A row has to be exactly its fields wide, or the field arithmetic below is fiction.
-            if (fieldCount == 0 || rowSize != fieldCount * 4) return false;
+            // A row wider than its fields is padded and still addressable by dword; a narrower one
+            // packs columns below a dword and is not. Five stock tables do the latter --
+            // CharBaseInfo, CharStartOutfit, PowerDisplay, SpellChainEffects and
+            // SpellItemEnchantmentCondition -- so the file opens either way and U32 refuses instead.
+            if (fieldCount == 0 || rowSize == 0) return false;
 
             const uint64_t need = uint64_t(kHeaderSize) + uint64_t(rowCount) * rowSize + stringSize;
             if (need > bytes.size()) return false;

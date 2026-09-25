@@ -38,6 +38,7 @@
 #include "offsets/game/M2.hpp"
 
 #include <cstring>
+#include <vector>
 
 namespace
 {
@@ -369,6 +370,66 @@ namespace
             g_wideSkins[g_wideSkinCount++] = { skin, skin->indices, skin->indexCount };
     }
 
+    // A wide skin's shared index buffer, as the draw needs it: each submesh's low 16-bit start, its
+    // count, and the full offset the fill placed it at. Keyed by the buffer, so a draw that never
+    // passes through a batch entry (the ground-shadow pass) can still be widened.
+    struct SharedBlock { uint16_t low; uint16_t count; uint32_t start; };
+    struct SharedWideBuffer { void* buffer; std::vector<SharedBlock> blocks; };
+    std::vector<SharedWideBuffer> g_sharedWide;
+
+    /** @brief Drops a buffer's layout: its address now belongs to a buffer being filled afresh. */
+    void ForgetSharedBuffer(void* buffer)
+    {
+        for (auto it = g_sharedWide.begin(); it != g_sharedWide.end(); ++it)
+            if (it->buffer == buffer) { g_sharedWide.erase(it); return; }
+    }
+
+    /** @brief Records the layout of a wide skin's shared index buffer, or forgets it for any other. */
+    void NoteSharedBuffer(void* model, bool wide)
+    {
+        void* buffer = *At<void*>(model, off::kOffSharedIndexBuf);
+        if (!buffer) return;
+        ForgetSharedBuffer(buffer);
+        if (!wide) return;
+
+        auto* skin   = *At<M2SkinProfile*>(model, off::kOffModelSkin);
+        auto* copies = *At<M2SkinSection*>(model, off::kOffModelSubmeshBuf);
+        const uint32_t instanceCopies = *At<uint32_t>(model, off::kOffSharedInstanceCopies);
+        if (!skin || !copies) return;
+
+        std::vector<SharedBlock> blocks;
+        blocks.reserve(skin->submeshCount);
+        uint32_t running = 0;
+        for (uint32_t i = 0; i < skin->submeshCount; ++i)
+        {
+            blocks.push_back({ copies[i].indexStart, copies[i].indexCount, running });
+            running += uint32_t(copies[i].indexCount) * instanceCopies;
+        }
+        g_sharedWide.push_back({ buffer, std::move(blocks) });
+    }
+
+    /**
+     * @brief The full start of a draw from a noted shared buffer, found by the low half and count
+     *        the draw carries. False when the buffer is not noted or no block matches.
+     */
+    bool SharedWideStart(void* buffer, uint32_t start, uint32_t count, uint32_t& wide)
+    {
+        for (const SharedWideBuffer& b : g_sharedWide)
+        {
+            if (b.buffer != buffer) continue;
+            for (const SharedBlock& k : b.blocks)
+            {
+                // A wide skin holds more than 65535 indices, so the engine caps it at one copy and a
+                // draw from it is always exactly one block.
+                if (k.low != (start & 0xFFFFu) || k.count != count) continue;
+                wide = k.start;
+                return true;
+            }
+            return false;
+        }
+        return false;
+    }
+
     uint32_t __fastcall hkSetModelIndices(void* instance, void* edx)
     {
         void* model = instance ? *At<void*>(instance, off::kOffInstModel) : nullptr;
@@ -378,6 +439,7 @@ namespace
         const bool rebuilding = geo && !BufferHolds(*At<void*>(geo, off::kOffGeoCtxIndexBuf));
 
         const uint32_t result = g_origSetModelIndices(instance, edx);
+        if (rebuilding) ForgetSharedBuffer(*At<void*>(geo, off::kOffGeoCtxIndexBuf));
         if (!result || !rebuilding || !UsesWideStarts(skin)) return result;
         NoteWideSkin(skin);
         RefillInstanceIndices(instance, *skin, UsesGlobalIndices(model));
@@ -391,7 +453,10 @@ namespace
 
         // The original owns creating the pool/buffer pair and sizing it, so it always runs first.
         const uint32_t result = g_origSharedSetIndices(model, edx);
-        if (!result || !rebuilding || !UsesWideStarts(skin)) return result;
+        if (!result || !rebuilding) return result;
+        const bool wide = UsesWideStarts(skin);
+        NoteSharedBuffer(model, wide);
+        if (!wide) return result;
         NoteWideSkin(skin);
         RefillSharedIndices(model, *skin, UsesGlobalIndices(model));
         return result;
@@ -448,7 +513,17 @@ namespace
      */
     void __fastcall hkDeviceDraw(void* device, void* edx, uint32_t* batch, int indexed)
     {
-        if (indexed && batch && g_drawSection && g_drawSkin && g_drawSection->level)
+        // A draw from a wide skin's shared buffer is widened from the buffer's own layout, which
+        // also covers the draws that carry no batch section, the ground shadow among them.
+        uint32_t sharedStart = 0;
+        if (indexed && batch && !g_sharedWide.empty()
+            && SharedWideStart(*At<void*>(device, gxoff::kGxDeviceIndexStream),
+                               *At<uint32_t>(batch, gxoff::kGxBatchStartIndex),
+                               *At<uint32_t>(batch, gxoff::kGxBatchIndexCount), sharedStart))
+        {
+            *At<uint32_t>(batch, gxoff::kGxBatchStartIndex) = sharedStart;
+        }
+        else if (indexed && batch && g_drawSection && g_drawSkin && g_drawSection->level)
         {
             const M2SkinSection& s = *g_drawSection;
             uint32_t& startIndex = *At<uint32_t>(batch, gxoff::kGxBatchStartIndex);

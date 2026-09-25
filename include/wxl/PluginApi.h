@@ -252,6 +252,24 @@ typedef struct WXL_Api
      * @return non-zero on the frame the text changes.
      */
     int(__cdecl* UiInputText)(const char* label, char* buf, size_t bufSize);
+
+    // Appended after UiInputText: check structSize before reading any of these.
+
+    /// Opens a row of tabs. Non-zero when it is visible; only then call UiEndTabBar after its tabs.
+    int(__cdecl* UiBeginTabBar)(const char* id);
+    void(__cdecl* UiEndTabBar)(void);
+
+    /// Draws one tab of the open bar. Non-zero while it is the selected one: draw its body, then
+    /// call UiEndTabItem.
+    int(__cdecl* UiBeginTabItem)(const char* label);
+    void(__cdecl* UiEndTabItem)(void);
+
+    /// Shows text in a tooltip while the item drawn just before is hovered. The text is shown as
+    /// is, never read as a format string.
+    void(__cdecl* UiItemTooltip)(const char* text);
+
+    /// Draws a line of text in the dimmed style used for hints and markers.
+    void(__cdecl* UiTextDisabled)(const char* text);
 } WXL_Api;
 
 /// The two entry points as the core resolves them, by name, out of a loaded extension.

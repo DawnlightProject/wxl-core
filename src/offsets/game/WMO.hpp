@@ -311,6 +311,9 @@ namespace wxl::offsets::game::wmo
     constexpr size_t kOffMogiCount     = 0x16C; // group-info entry count (kRootSlots[4].countField)
     constexpr size_t kMogiStride       = 0x20;  // group-info entry stride
     constexpr size_t kOffMogiBbox      = 0x04;  // bbox min within an entry (max at +0x10)
+    constexpr size_t kOffMogiFlags     = 0x00;  // u32 group flags, the MOGP flags copied into MOGI
+    // Non-zero once the group-info table is usable; CMapObj::GetGroupFlags (0x007AE7B0) returns 0 until then.
+    constexpr size_t kOffRootGroupInfoReady = 0x1E0;
     // Standalone names for the handful of kRootSlots entries a call site reads back by itself, once the
     // generic root walk has already filled them (see kRootSlots for the full 17-slot table this aliases).
     constexpr size_t kOffMosb      = 0x12C; // MOSB content pointer (skybox name; empty = no skybox)

@@ -65,6 +65,7 @@ namespace wxl::events
         OnAdtHeightBlend,// a terrain PS permutation was patched for height blending (AdtHeightBlendArgs)
         OnM2NativeLoad,  // a modern MD21 model was direct-filled by the native reader (M2NativeLoadArgs)
         OnPacketReceived,// an inbound server message reached the dispatcher (PacketReceivedArgs)
+        OnWorldSceneBegin, // world pass about to draw; depth may be redirected (WorldSceneBeginArgs)
         Count
     };
 
@@ -122,9 +123,46 @@ namespace wxl::events
      *        sceneDepth is the depth-stencil surface the world was drawn into, captured before the
      *        pass ran; it may be null when none was bound. Whatever is bound by the time this fires is
      *        not reliably that surface -- a post-process pass inside the call can leave its own -- and
-     *        depth-testing against the wrong one rejects every pixel without reporting an error.
+     *        depth-testing against the wrong one rejects every pixel without reporting an error. When an
+     *        OnWorldSceneBegin subscriber redirected the pass, sceneDepth is that override, and it is no
+     *        longer bound, so it can be sampled.
+     *
+     *        normalTarget is the render-target 1 surface a Begin subscriber supplied, when the core bound
+     *        it for this pass (cleared to 0, then written by the shaders that output oC1); null when none
+     *        was supplied or the core declined it. It is unbound by now.
+     *
+     *        sceneColor is the colour override a Begin subscriber supplied, when the core used it (unbound
+     *        by now; null otherwise). The world then never reached the back buffer: a subscriber must
+     *        write it (tonemap) during this event and set *colorResolved = 1, or the core copies the
+     *        override across itself (a plain StretchRect, no tonemap). colorResolved is never null.
      */
-    struct WorldSceneEndArgs  { void* device; void* sceneDepth; };
+    struct WorldSceneEndArgs  { void* device; void* sceneDepth; void* normalTarget; void* sceneColor; int* colorResolved; };
+    /**
+     * @brief Args for OnWorldSceneBegin: the world pass is about to draw.
+     *
+     *        sceneDepth is the depth-stencil surface bound before the pass (never null here: the event
+     *        does not fire without one). A subscriber that needs the world's depth in a surface of its
+     *        own -- one it can sample afterwards -- writes that surface to *depthOverride. The core
+     *        then runs the whole pass against it, including every render-target bind the engine makes
+     *        inside the pass, clears it the way the engine clears its own (Z 1.0, stencil 0) and puts
+     *        the engine's surface back once the pass returns. The override must match sceneDepth's
+     *        size and multisample type. One owner: the last subscriber to write wins.
+     *
+     *        OnWorldSceneEnd then reports the override as its sceneDepth, already unbound.
+     *        depthOverride is never null and starts null.
+     *
+     *        normalTarget: a subscriber may write an IDirect3DSurface9* render target (A8R8G8B8, the
+     *        size of the world's render target 0, not multisampled) to it. The core clears it to 0 and
+     *        binds it as render target 1 whenever the world's render target 0 is bound during the pass
+     *        (never while the engine draws into another target), and lets a draw write it only when the
+     *        bound pixel shader outputs oC1 and alpha blending is off. Never null, starts null.
+     *
+     *        colorOverride: a subscriber may write an IDirect3DSurface9* render target (typically
+     *        A16B16G16R16F, the back buffer's size and multisample type). The core then runs the whole
+     *        world pass into it instead of the back buffer, the way depthOverride works, and hands it
+     *        back in OnWorldSceneEnd, where the subscriber must resolve it to the back buffer. Never null.
+     */
+    struct WorldSceneBeginArgs { void* device; void* sceneDepth; void** depthOverride; void** normalTarget; void** colorOverride; };
     /**
      * @brief Args for OnLiquidRender, fired before the native liquid pass draws. passType is 0 for the
      *        main pass, 1 for the secondary; instanceCount is the visible liquid instances in this pass;

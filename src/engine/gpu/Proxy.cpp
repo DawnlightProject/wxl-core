@@ -15,13 +15,14 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 // The client LoadLibrary's "d3d9.dll" from its own folder first, so this proxy loads ahead of the system
-// one. It does exactly two things: forward the factory-create exports to the real system d3d9, and load
-// WarcraftXL.dll into the process. All rendering runs on the client's native D3D9 device.
+// one. It forwards the factory-create exports to the real system d3d9, loads WarcraftXL.dll into the
+// process, and has the factory create a non-pure device. All rendering runs on the client's native device.
 
 #include <windows.h>
 #include <d3d9.h>
 
 #include "common/Log.hpp"
+#include "common/Mem.hpp"
 
 #include <cstdarg>
 
@@ -69,10 +70,78 @@ namespace
         return LoadLibraryA("d3d9_real.dll");
     }
 
+    // --- non-pure device ---
+    // The engine asks for a pure device whenever it takes hardware vertex processing. A pure device
+    // answers every Get* state query with nothing, so any code that saves and restores device state
+    // would restore garbage. The factory's CreateDevice (and CreateDeviceEx) drop that one flag.
+
+    using CreateDeviceFn   = HRESULT (STDMETHODCALLTYPE*)(IDirect3D9*, UINT, D3DDEVTYPE, HWND, DWORD,
+                                                          D3DPRESENT_PARAMETERS*, IDirect3DDevice9**);
+    using CreateDeviceExFn = HRESULT (STDMETHODCALLTYPE*)(IDirect3D9Ex*, UINT, D3DDEVTYPE, HWND, DWORD,
+                                                          D3DPRESENT_PARAMETERS*, D3DDISPLAYMODEEX*,
+                                                          IDirect3DDevice9Ex**);
+    constexpr unsigned kSlotCreateDevice   = 16;  // IDirect3D9 / IDirect3D9Ex
+    constexpr unsigned kSlotCreateDeviceEx = 20;  // IDirect3D9Ex only
+
+    // Separate originals per factory kind: the two vtables need not share an implementation.
+    CreateDeviceFn   g_origCreateDevice9   = nullptr;
+    CreateDeviceFn   g_origCreateDeviceOnEx = nullptr;
+    CreateDeviceExFn g_origCreateDeviceEx  = nullptr;
+
+    DWORD StripPure(DWORD flags, const char* entry)
+    {
+        const DWORD out = flags & ~static_cast<DWORD>(D3DCREATE_PUREDEVICE);
+        static bool logged = false;
+        if (!logged)
+        {
+            logged = true;
+            Log("d3d9proxy: %s behavior 0x%08lX -> 0x%08lX", entry, flags, out);
+        }
+        return out;
+    }
+
+    HRESULT STDMETHODCALLTYPE hkCreateDevice9(IDirect3D9* self, UINT adapter, D3DDEVTYPE type, HWND wnd,
+                                              DWORD flags, D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** out)
+    {
+        return g_origCreateDevice9(self, adapter, type, wnd, StripPure(flags, "CreateDevice"), pp, out);
+    }
+
+    HRESULT STDMETHODCALLTYPE hkCreateDeviceOnEx(IDirect3D9* self, UINT adapter, D3DDEVTYPE type, HWND wnd,
+                                                 DWORD flags, D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** out)
+    {
+        return g_origCreateDeviceOnEx(self, adapter, type, wnd, StripPure(flags, "CreateDevice(Ex factory)"), pp, out);
+    }
+
+    HRESULT STDMETHODCALLTYPE hkCreateDeviceEx(IDirect3D9Ex* self, UINT adapter, D3DDEVTYPE type, HWND wnd,
+                                               DWORD flags, D3DPRESENT_PARAMETERS* pp, D3DDISPLAYMODEEX* mode,
+                                               IDirect3DDevice9Ex** out)
+    {
+        return g_origCreateDeviceEx(self, adapter, type, wnd, StripPure(flags, "CreateDeviceEx"), pp, mode, out);
+    }
+
+    /// Swaps one factory vtable slot once; a vtable already carrying the hook is left alone.
+    template <class Fn>
+    void HookSlot(void* factory, unsigned slot, Fn hook, Fn* orig)
+    {
+        void** vtbl = *reinterpret_cast<void***>(factory);
+        if (vtbl[slot] == reinterpret_cast<void*>(hook)) return;
+        // One original per hook: a second vtable with a different implementation stays unhooked.
+        if (*orig && vtbl[slot] != reinterpret_cast<void*>(*orig)) return;
+        void* previous = nullptr;
+        if (::wxl::mem::SwapPointer(&vtbl[slot], reinterpret_cast<void*>(hook), &previous))
+            *orig = reinterpret_cast<Fn>(previous);
+    }
+
     /** @brief Lazily loads the real d3d9 and resolves its create entry points on first use. */
     void EnsureReal()
     {
         if (g_realCreate9 || g_realCreate9Ex) return;
+        // The engine frees d3d9.dll after its hardware probe; the factory vtable keeps our hooks, so the
+        // proxy is pinned to outlive that FreeLibrary.
+        HMODULE self = nullptr;
+        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                                reinterpret_cast<LPCSTR>(&EnsureReal), &self))
+            Log("d3d9proxy: could not pin the proxy (win32=%lu)", GetLastError());
         HMODULE r = LoadRealD3D9();
         if (!r) { Log("d3d9proxy: FAILED to load the system d3d9.dll"); return; }
         g_realCreate9   = reinterpret_cast<Create9Fn>(GetProcAddress(r, "Direct3DCreate9"));
@@ -106,7 +175,9 @@ extern "C" IDirect3D9* WINAPI Direct3DCreate9(UINT sdkVersion)
 {
     EnsureReal();
     EnsureRuntimeLoaded();
-    return g_realCreate9 ? g_realCreate9(sdkVersion) : nullptr;
+    IDirect3D9* factory = g_realCreate9 ? g_realCreate9(sdkVersion) : nullptr;
+    if (factory) HookSlot(factory, kSlotCreateDevice, &hkCreateDevice9, &g_origCreateDevice9);
+    return factory;
 }
 
 /**
@@ -119,7 +190,16 @@ extern "C" HRESULT WINAPI Direct3DCreate9Ex(UINT sdkVersion, IDirect3D9Ex** out)
 {
     EnsureReal();
     EnsureRuntimeLoaded();
-    if (g_realCreate9Ex) return g_realCreate9Ex(sdkVersion, out);
+    if (g_realCreate9Ex)
+    {
+        const HRESULT hr = g_realCreate9Ex(sdkVersion, out);
+        if (SUCCEEDED(hr) && out && *out)
+        {
+            HookSlot(*out, kSlotCreateDevice, &hkCreateDeviceOnEx, &g_origCreateDeviceOnEx);
+            HookSlot(*out, kSlotCreateDeviceEx, &hkCreateDeviceEx, &g_origCreateDeviceEx);
+        }
+        return hr;
+    }
     if (out) *out = nullptr;
     return E_NOINTERFACE;
 }

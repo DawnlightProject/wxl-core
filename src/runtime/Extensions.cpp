@@ -164,6 +164,12 @@ namespace wxl::runtime::extensions
             &wxl::ui::c::Combo,
             &wxl::ui::c::CollapsingHeader,
             &wxl::ui::c::InputText,
+            &wxl::ui::c::BeginTabBar,
+            &wxl::ui::c::EndTabBar,
+            &wxl::ui::c::BeginTabItem,
+            &wxl::ui::c::EndTabItem,
+            &wxl::ui::c::ItemTooltip,
+            &wxl::ui::c::TextDisabled,
         };
 
         // --- loading --------------------------------------------------------------------------

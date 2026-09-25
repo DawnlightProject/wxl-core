@@ -19,6 +19,7 @@
 #include "common/Config.hpp"
 
 #include <windows.h>
+#include <share.h>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -131,7 +132,8 @@ namespace wxl::log
             }
         }
 
-        fopen_s(&g_file, path, "w");
+        // Shared for reading, so the log can be read while the game runs; nobody else may write it.
+        g_file = _fsopen(path, "w", _SH_DENYWR);
         if (g_file) setvbuf(g_file, nullptr, _IOFBF, 64 * 1024);
     }
 

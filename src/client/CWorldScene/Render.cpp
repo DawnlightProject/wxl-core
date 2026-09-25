@@ -22,6 +22,8 @@
 #include "engine/events/Event.hpp"
 #include "game/Gx.hpp"
 #include "offsets/engine/Gx.hpp"
+#include "client/CWorldScene/Mrt.hpp"
+#include "game/GBuffer.hpp"
 
 #include <windows.h>
 #include <d3d9.h>
@@ -105,7 +107,153 @@ namespace
     }
 
     /**
-     * @brief Detours the world scene pass, emitting OnWorldSceneEnd once it has drawn.
+     * @brief Redirects the world pass's depth to a subscriber's surface.
+     *
+     * Every render-target bind the engine makes binds the depth surface cached on its device object,
+     * so the cached pointer is swapped as well as the bound one; binding alone would be undone by the
+     * first post-process target inside the pass.
+     * @param d      the D3D9 device.
+     * @param depth  the surface the pass draws its depth into.
+     * @return the engine's cached depth surface to put back, or null when the redirect is declined.
+     */
+    void* BeginDepthOverride(IDirect3DDevice9* d, IDirect3DSurface9* depth)
+    {
+        auto* g = static_cast<off::GxDevice*>(gx::RawGraphicsDevice());
+        if (!g || !g->depthSurface) return nullptr;
+
+        // An offscreen-target override makes the engine bind another depth field; ours would not hold.
+        const uintptr_t base = uintptr_t(g);
+        if (*reinterpret_cast<const uint32_t*>(base + off::kRtOverrideField)
+            || *reinterpret_cast<const uint32_t*>(base + off::kRtDepthOverrideField))
+        {
+            static bool logged = false;
+            if (!logged) { logged = true; WLOG_WARN("render: depth override declined, engine target override active"); }
+            return nullptr;
+        }
+
+        void* engineDepth = g->depthSurface;
+        g->depthSurface = depth;
+        d->SetDepthStencilSurface(depth);
+
+        // Clear covers the viewport only, so it is widened to the bound target for the clear.
+        // A pure device refuses GetViewport; the viewport is then left as found.
+        D3DVIEWPORT9 saved{};
+        const bool widen = SUCCEEDED(d->GetViewport(&saved));
+        IDirect3DSurface9* rt = nullptr;
+        D3DSURFACE_DESC rtDesc{};
+        if (SUCCEEDED(d->GetRenderTarget(0, &rt)) && rt) { rt->GetDesc(&rtDesc); rt->Release(); }
+        if (widen && rtDesc.Width && rtDesc.Height)
+        {
+            const D3DVIEWPORT9 full{ 0, 0, rtDesc.Width, rtDesc.Height, 0.0f, 1.0f };
+            d->SetViewport(&full);
+        }
+        // The engine's own scene clear writes Z 1.0; stencil 0 is its clear value too.
+        if (FAILED(d->Clear(0, nullptr, D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, 0, 1.0f, 0)))
+            d->Clear(0, nullptr, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
+        if (widen) d->SetViewport(&saved);
+
+        static bool announced = false;
+        if (!announced) { announced = true; WLOG_INFO("render: world pass depth redirected (%p -> %p)", engineDepth, (void*)depth); }
+        return engineDepth;
+    }
+
+    /**
+     * @brief Puts the engine's depth surface back after a redirected pass.
+     * @param d            the D3D9 device.
+     * @param depth        the override the pass drew into.
+     * @param engineDepth  the engine's cached surface returned by BeginDepthOverride.
+     */
+    void EndDepthOverride(IDirect3DDevice9* d, IDirect3DSurface9* depth, void* engineDepth)
+    {
+        auto* g = static_cast<off::GxDevice*>(gx::RawGraphicsDevice());
+        if (g && g->depthSurface == depth) g->depthSurface = engineDepth;
+
+        IDirect3DSurface9* bound = nullptr;
+        d->GetDepthStencilSurface(&bound);
+        if (bound == depth) d->SetDepthStencilSurface(static_cast<IDirect3DSurface9*>(engineDepth));
+        if (bound) bound->Release();
+    }
+
+    /**
+     * @brief Redirects the world pass's colour target. Every render-target bind the engine makes
+     *        binds its cached back buffer (device +0x3B3C) unless an override is active, so the cache
+     *        is swapped along with the bound target.
+     * @return the engine's back-buffer surface to put back, or null when declined.
+     */
+    void* BeginColorOverride(IDirect3DDevice9* d, IDirect3DSurface9* color)
+    {
+        auto* g = static_cast<off::GxDevice*>(gx::RawGraphicsDevice());
+        if (!g || !g->backBuffer || !color) return nullptr;
+        const uintptr_t base = uintptr_t(g);
+        if (*reinterpret_cast<const uint32_t*>(base + off::kRtOverrideField)) return nullptr;
+
+        IDirect3DSurface9* rt0 = nullptr;
+        if (FAILED(d->GetRenderTarget(0, &rt0)) || !rt0) return nullptr;
+        D3DSURFACE_DESC a{}, b{};
+        rt0->GetDesc(&a);
+        color->GetDesc(&b);
+        const bool isEngine = rt0 == g->backBuffer;
+        rt0->Release();
+        if (!isEngine || a.Width != b.Width || a.Height != b.Height || b.MultiSampleType != a.MultiSampleType)
+        {
+            static bool logged = false;
+            if (!logged)
+            {
+                logged = true;
+                WLOG_WARN("render: colour override declined (%ux%u fmt %d vs %ux%u fmt %d, engine target %d)",
+                          b.Width, b.Height, int(b.Format), a.Width, a.Height, int(a.Format), int(isEngine));
+            }
+            return nullptr;
+        }
+
+        static bool capsLogged = false;
+        if (!capsLogged)
+        {
+            capsLogged = true;
+            IDirect3D9* d3d = nullptr;
+            D3DDEVICE_CREATION_PARAMETERS cp{};
+            D3DDISPLAYMODE mode{};
+            if (SUCCEEDED(d->GetDirect3D(&d3d)) && d3d && SUCCEEDED(d->GetCreationParameters(&cp)) &&
+                SUCCEEDED(d->GetDisplayMode(0, &mode)))
+            {
+                const HRESULT rt    = d3d->CheckDeviceFormat(cp.AdapterOrdinal, cp.DeviceType, mode.Format,
+                                                             D3DUSAGE_RENDERTARGET, D3DRTYPE_TEXTURE, b.Format);
+                const HRESULT blend = d3d->CheckDeviceFormat(cp.AdapterOrdinal, cp.DeviceType, mode.Format,
+                                                             D3DUSAGE_RENDERTARGET | D3DUSAGE_QUERY_POSTPIXELSHADER_BLENDING,
+                                                             D3DRTYPE_TEXTURE, b.Format);
+                const HRESULT copy  = d3d->CheckDeviceFormatConversion(cp.AdapterOrdinal, cp.DeviceType, b.Format, a.Format);
+                WLOG_INFO("render: colour override format %d: render target %s, blending %s, StretchRect to %d %s",
+                          int(b.Format), SUCCEEDED(rt) ? "yes" : "NO", SUCCEEDED(blend) ? "yes" : "NO", int(a.Format),
+                          SUCCEEDED(copy) ? "yes" : "NO");
+            }
+            if (d3d) d3d->Release();
+        }
+
+        void* engine = g->backBuffer;
+        g->backBuffer = color;
+        d->SetRenderTarget(0, color);
+        static bool announced = false;
+        if (!announced) { announced = true; WLOG_INFO("render: world pass colour redirected (%p -> %p)", engine, (void*)color); }
+        return engine;
+    }
+
+    /// Puts the engine's back buffer back in its cache and on the device.
+    void EndColorOverride(IDirect3DDevice9* d, IDirect3DSurface9* color, void* engine)
+    {
+        auto* g = static_cast<off::GxDevice*>(gx::RawGraphicsDevice());
+        if (g && g->backBuffer == color) g->backBuffer = engine;
+        IDirect3DSurface9* bound = nullptr;
+        d->GetRenderTarget(0, &bound);
+        if (bound == color) d->SetRenderTarget(0, static_cast<IDirect3DSurface9*>(engine));
+        if (bound) bound->Release();
+    }
+
+    /**
+     * @brief Detours the world scene pass, emitting OnWorldSceneBegin before it and OnWorldSceneEnd once
+     *        it has drawn.
+     *
+     * A Begin subscriber may redirect the pass's depth to a surface of its own; see
+     * WorldSceneBeginArgs.
      *
      * Its caller runs this, then the world text batch, then puts back the projection and view it saved
      * before the pass. Emitting on the way out of the pass therefore lands in the one window where the
@@ -121,17 +269,59 @@ namespace
         // surface of their own bound. A subscriber that depth-tests against whatever it finds bound
         // afterwards is testing against a surface the world never wrote to, which rejects all of its
         // geometry and reports nothing.
+        IDirect3DDevice9*  d          = static_cast<IDirect3DDevice9*>(gx::RawDevice());
         IDirect3DSurface9* sceneDepth = nullptr;
-        if (IDirect3DDevice9* d = static_cast<IDirect3DDevice9*>(gx::RawDevice()))
-            d->GetDepthStencilSurface(&sceneDepth);
+        if (d) d->GetDepthStencilSurface(&sceneDepth);
+
+        // The rewritten engine shaders add the light buffer only when a provider sets c30.x this pass.
+        static const float kNoLightBuffer[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        wxl::game::gbuffer::SetEnginePixelConstants(wxl::game::gbuffer::kLightBufferParams, kNoLightBuffer, 1);
+
+        IDirect3DSurface9* depthOverride = nullptr;
+        IDirect3DSurface9* normalTarget  = nullptr;
+        IDirect3DSurface9* colorOverride = nullptr;
+        if (d && sceneDepth && ev::Any(ev::Event::OnWorldSceneBegin))
+        {
+            void* requested = nullptr;
+            void* normals   = nullptr;
+            void* color     = nullptr;
+            ev::WorldSceneBeginArgs b{ d, sceneDepth, &requested, &normals, &color };
+            ev::Emit(ev::Event::OnWorldSceneBegin, &b);
+            depthOverride = static_cast<IDirect3DSurface9*>(requested);
+            normalTarget  = static_cast<IDirect3DSurface9*>(normals);
+            colorOverride = static_cast<IDirect3DSurface9*>(color);
+        }
+        if (d && !normalTarget) normalTarget = static_cast<IDirect3DSurface9*>(wxl::runtime::mrt::DiagTarget(d));
+
+        void* engineDepth = depthOverride ? BeginDepthOverride(d, depthOverride) : nullptr;
+        if (!engineDepth) depthOverride = nullptr;
+
+        void* engineColor = colorOverride ? BeginColorOverride(d, colorOverride) : nullptr;
+        if (!engineColor) colorOverride = nullptr;
+
+        const bool mrt = normalTarget && wxl::runtime::mrt::Begin(d, normalTarget);
 
         g_origWorldScene(worldFrame, edx);
 
+        if (mrt) wxl::runtime::mrt::End(d);
+        if (colorOverride) EndColorOverride(d, colorOverride, engineColor);
+        if (depthOverride) EndDepthOverride(d, depthOverride, engineDepth);
+
+        int resolved = 0;
         if (ev::Any(ev::Event::OnWorldSceneEnd))
         {
-            ev::WorldSceneEndArgs a{ gx::RawDevice(), sceneDepth };
+            ev::WorldSceneEndArgs a{ gx::RawDevice(), depthOverride ? depthOverride : sceneDepth,
+                                     mrt ? normalTarget : nullptr, colorOverride, &resolved };
             ev::Emit(ev::Event::OnWorldSceneEnd, &a);
         }
+        if (colorOverride && !resolved)
+        {
+            // Nobody tonemapped: keep the frame visible rather than showing a stale back buffer.
+            d->StretchRect(colorOverride, nullptr, static_cast<IDirect3DSurface9*>(engineColor), nullptr, D3DTEXF_POINT);
+            static bool warned = false;
+            if (!warned) { warned = true; WLOG_WARN("render: colour override not resolved by any subscriber, copied as is"); }
+        }
+        if (mrt) wxl::runtime::mrt::DiagShow(d, normalTarget);
 
         if (sceneDepth) sceneDepth->Release();
     }
@@ -195,6 +385,7 @@ namespace
         // DEFAULT-pool resources before the native Reset, or the Reset fails and the device is lost.
         ev::Emit(ev::Event::OnDeviceLost, &a);
         gx::ReleaseResetResources();  // free any tracked engine render targets (DEFAULT pool)
+        wxl::runtime::mrt::OnDeviceLost();
 
         const long r = g_origReset(dev, params);
         if (SUCCEEDED(r))

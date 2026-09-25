@@ -54,6 +54,17 @@ namespace wxl::game::clientdb
         return *reinterpret_cast<const uint8_t*>(off::kCompressFlag) != 0;
     }
 
+    /// Turns packed storage off (or back on). The flag is read twice -- by an indexed table's loader
+    /// while it builds its records, and by every reader of one afterwards -- so the two only agree
+    /// while it holds still. Clearing it is therefore only correct before the first indexed table
+    /// loads, which is why the one caller does it from those tables' own Load.
+    ///
+    /// The client sets it from the `dbCompress` CVar, whose default of -1 means on.
+    inline void SetCompressed(bool on)
+    {
+        *reinterpret_cast<uint8_t*>(off::kCompressFlag) = on ? 1 : 0;
+    }
+
     class Table
     {
     public:
