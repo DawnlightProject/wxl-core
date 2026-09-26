@@ -309,6 +309,15 @@ Per pixel:
 - **Specular.** GGX with height-correlated Smith visibility and Schlick Fresnel (F0 0.04).
 - **Emissive heads** (section 3).
 
+**A G-buffer left over from what was drawn before.** The core opens render targets 1 and 2 only for
+the rewritten shaders. An opaque surface drawn with a shader the rewrite missed writes its depth but
+leaves the normal, albedo and material of whatever was drawn there before it (an interior wall over the
+terrain behind it). Lit with those, walls showed the mountain's edges and the next room's beams through
+them. On building and terrain pixels (never bent normals), a stored normal more than about 70 degrees
+from the normal the depth describes marks such a pixel: it is lit as a plain building with the depth's
+normal and a neutral albedo. The Material view shows these pixels in yellow; they name the shaders the
+rewrite still has to cover.
+
 **Not twice what the engine lights.** The engine already lights terrain, buildings and models with
 its own M2 lights (the carried torch, braziers, campfires), and a WMO light is baked into its
 building's interior vertex colours. Added at full strength on top, either showed as a second pool on

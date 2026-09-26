@@ -86,6 +86,33 @@ float AdaptShare(float3 diffuse, float roomW)
     return shade2.z * ratio / (1.0 + ratio);
 }
 
+// --- a G-buffer left over from what was drawn before -------------------------------------------------------
+// The core opens render targets 1 and 2 only for the rewritten shaders (those that write oC1 and oC2). An
+// opaque surface drawn with a shader the rewrite missed writes its depth but leaves in RT1 and RT2 the
+// normal, albedo and material of whatever was drawn there before it: an interior wall over the terrain
+// behind it. Lit with those, the wall showed the mountain's edges and the beams of the next room through
+// it. Such a pixel is told by its stored normal disagreeing with the surface its depth describes.
+
+// The camera-relative point at pixel q (clamped to the screen).
+float3 PointAt(int2 q)
+{
+    q = clamp(q, int2(0, 0), int2(screen.xy) - 1);
+    return FromScreen((float2(q) + 0.5) * screen.zw, DepthToNdc(depthTex.Load(int3(q, 0))));
+}
+
+// The surface's own normal from depth: on each axis the side with the smaller step along the view ray,
+// so an edge never bends it. Faces the camera.
+float3 DepthNormal(int2 px, float3 p)
+{
+    float3 r = PointAt(px + int2(1, 0)), l = PointAt(px - int2(1, 0));
+    float3 d = PointAt(px + int2(0, 1)), u = PointAt(px - int2(0, 1));
+    float3 dx = abs(dot(r - p, p)) < abs(dot(p - l, p)) ? r - p : p - l;
+    float3 dy = abs(dot(d - p, p)) < abs(dot(p - u, p)) ? d - p : p - u;
+    float3 n = cross(dy, dx);
+    n = dot(n, n) > 1e-12 ? normalize(n) : -normalize(p);
+    return dot(n, p) > 0.0 ? -n : n;
+}
+
 // Burley's diffuse, normalised like Lambert (1 at normal incidence and roughness 0).
 float Burley(float ndl, float ndv, float ldh, float rough)
 {
@@ -153,9 +180,25 @@ void main(uint3 id : SV_DispatchThreadID)
 
     float3 V = -r / max(dist, 1e-4);
     float3 n = hasNormal ? normalize(ViewToWorld(g1.rgb * 2.0 - 1.0)) : V;
+    // Buildings and terrain have no bent normals (no normal maps, big faces): one far from the surface its
+    // depth describes belongs to what was drawn there before (see DepthNormal). Models and grass are left
+    // alone: grass cards carry upward normals on purpose. The stale pixel is lit as a plain building, with
+    // its own normal and a neutral albedo, rather than with another surface's texture.
+    bool stale = false;
+    if (hasNormal && kind > 1.5)
+    {
+        float3 geo = DepthNormal(px, r);
+        if (dot(n, geo) < 0.35)
+        {
+            stale = true;
+            n = geo;
+            kind = 2.0;
+            code = 128.0;
+        }
+    }
     // A normal facing away from the camera (an interpolated one at a grazing edge) is folded back.
     if (dot(n, V) < 0.0) n = normalize(n - V * (dot(n, V) * 1.01));
-    float3 albedo = kind > 0.5 ? DecodeGamma(g2.rgb) : DecodeGamma(float3(0.35, 0.35, 0.35));
+    float3 albedo = kind > 0.5 && !stale ? DecodeGamma(g2.rgb) : DecodeGamma(float3(0.35, 0.35, 0.35));
     if (Isolated(LIGHTS_ISO_WHITE) || view == LIGHTS_VIEW_LIGHT) albedo = 1.0;
 
     // Roughness from the material: terrain by its gloss mask, buildings, models; wet ground is glossier.
@@ -254,6 +297,7 @@ void main(uint3 id : SV_DispatchThreadID)
         {
             float3 k = kind < 1.5 ? float3(1.0, 0.2, 0.2) : (kind < 2.5 ? float3(0.2, 1.0, 0.2) : float3(0.2, 0.4, 1.0));
             c = kind > 0.5 ? DecodeGamma(k * (0.4 + 0.6 * gloss)) : float3(1.0, 0.0, 1.0);
+            if (stale) c = float3(1.0, 1.0, 0.0);   // yellow: a G-buffer left over from what was drawn before
         }
         else if (view == LIGHTS_VIEW_LIGHT) c = added;
         else if (view == LIGHTS_VIEW_CLUSTERS)

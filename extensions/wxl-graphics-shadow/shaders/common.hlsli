@@ -77,27 +77,26 @@ float3 ShRelAt(int2 px)
 }
 
 // The receiver's world normal: the G-buffer's where a material wrote one, else from depth (the side
-// with the smaller depth step on each axis, so an edge never bends it). Faces the camera.
+// with the smaller depth step on each axis, so an edge never bends it). Faces the camera. The core
+// opens the G-buffer's targets only for rewritten shaders, so a surface drawn with one the rewrite missed
+// leaves the normal of whatever was drawn before it (an interior wall keeps the terrain's): a G-buffer
+// normal more than about 70 degrees from the depth's is that, and the depth's is used.
 float3 ShNormal(int2 px, float3 p)
 {
-    float3 n;
+    float3 r = ShRelAt(px + int2(1, 0)), l = ShRelAt(px - int2(1, 0));
+    float3 d = ShRelAt(px + int2(0, 1)), u = ShRelAt(px - int2(0, 1));
+    float3 dx = abs(dot(r - p, p)) < abs(dot(p - l, p)) ? r - p : p - l;
+    float3 dy = abs(dot(d - p, p)) < abs(dot(p - u, p)) ? d - p : p - u;
+    float3 geo = cross(dy, dx);
+    geo = dot(geo, geo) > 1e-12 ? normalize(geo) : -normalize(p);
+    geo = dot(geo, p) > 0.0 ? -geo : geo;
     // The stand-in is 1 x 1: read the G-buffer only when it is bound.
     float4 g = P[SH_ROW_DEPTH].z > 0.5 ? normalTex.Load(int3(px, 0)) : float4(0.0, 0.0, 0.0, 0.0);
-    if (g.a > 0.25)
-    {
-        float3 v = normalize(g.rgb * 2.0 - 1.0);
-        n = float3(dot(v, P[SH_ROW_VIEWROT].xyz), dot(v, P[SH_ROW_VIEWROT + 1].xyz), dot(v, P[SH_ROW_VIEWROT + 2].xyz));
-    }
-    else
-    {
-        float3 r = ShRelAt(px + int2(1, 0)), l = ShRelAt(px - int2(1, 0));
-        float3 d = ShRelAt(px + int2(0, 1)), u = ShRelAt(px - int2(0, 1));
-        float3 dx = abs(dot(r - p, p)) < abs(dot(p - l, p)) ? r - p : p - l;
-        float3 dy = abs(dot(d - p, p)) < abs(dot(p - u, p)) ? d - p : p - u;
-        n = cross(dy, dx);
-    }
-    n = normalize(n);
-    return dot(n, p) > 0.0 ? -n : n;
+    if (g.a <= 0.25) return geo;
+    float3 v = normalize(g.rgb * 2.0 - 1.0);
+    float3 n = normalize(float3(dot(v, P[SH_ROW_VIEWROT].xyz), dot(v, P[SH_ROW_VIEWROT + 1].xyz), dot(v, P[SH_ROW_VIEWROT + 2].xyz)));
+    n = dot(n, p) > 0.0 ? -n : n;
+    return dot(n, geo) < 0.35 ? geo : n;
 }
 
 #endif

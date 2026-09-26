@@ -61,7 +61,7 @@
 #define LIGHTS_VIEW_NONE     0
 #define LIGHTS_VIEW_ALBEDO   1   // RT2 as the lights see it; magenta: a normal but no albedo
 #define LIGHTS_VIEW_NORMALS  2   // the world normal as colour
-#define LIGHTS_VIEW_MATERIAL 3   // kind: red model, green building, blue terrain; brightness the gloss
+#define LIGHTS_VIEW_MATERIAL 3   // kind: red model, green building, blue terrain; brightness the gloss; yellow a stale G-buffer
 #define LIGHTS_VIEW_LIGHT    4   // the lamps' light alone, on white surfaces
 #define LIGHTS_VIEW_CLUSTERS 5   // lights in the pixel's cluster, as heat
 #define LIGHTS_VIEW_SHADOWS  6   // the shadow slots' visibility, one colour per slot
