@@ -389,18 +389,22 @@ namespace
         for (int r = 0; r < 4; ++r)
             for (int k = 0; k < 4; ++k) { c[r][k] = pass.view[r * 4 + k]; c[4 + r][k] = pass.proj[r * 4 + k]; }
         c[8][0] = pass.cameraPos[0]; c[8][1] = pass.cameraPos[1]; c[8][2] = pass.cameraPos[2]; c[8][3] = s.casterBias;
-        c[9][0] = pass.lightDir[0]; c[9][1] = pass.lightDir[1]; c[9][2] = pass.lightDir[2]; c[9][3] = 0.0f;
+        float m[16];
+        mx::Mul4(pass.view, pass.proj, m);
+        int step = kStepBySlot[int(pass.slot)] << std::max(s.casterDetail, 0);
+        if (s.casterDetail < 0) step = std::max(step >> 1, 1);
+        // The mesh follows only the ground's grid corners (every kUnit * step yards): where the ground dips
+        // between them, a mesh at their height lies above it and shadows it in squares. Lowered straight
+        // down in proportion to its cell, it never shadows its own ground; a hill still shadows what lies
+        // behind it. (The bias along the light is almost horizontal under a low sun or moon.)
+        c[9][0] = pass.lightDir[0]; c[9][1] = pass.lightDir[1]; c[9][2] = pass.lightDir[2];
+        c[9][3] = std::max(s.casterDrop, 0.0f) * float(step);
         d->SetVertexShaderConstantF(0, &c[0][0], 10);
         const float scale[4] = { 0.0f, 0.0f, 0.0f, pass.depthScale };
         d->SetPixelShaderConstantF(0, scale, 1);
         d->SetVertexShader(g_vs);
         d->SetPixelShader(g_ps);
         d->SetVertexDeclaration(g_decl);
-
-        float m[16];
-        mx::Mul4(pass.view, pass.proj, m);
-        int step = kStepBySlot[int(pass.slot)] << std::max(s.casterDetail, 0);
-        if (s.casterDetail < 0) step = std::max(step >> 1, 1);
         int lod = 0;
         while ((1 << lod) < step && lod < kLods - 1) ++lod;
         d->SetIndices(g_ib[lod]);
@@ -415,7 +419,7 @@ namespace
                 if (!mesh.vb || mesh.cx == INT_MIN) continue;
                 const float x0 = (32.0f - float(mesh.cy)) * T;
                 const float y0 = (32.0f - float(mesh.cx)) * T;
-                if (!Visible(m, pass.cameraPos, x0 - T, x0, y0 - T, y0, mesh.zmin, mesh.zmax)) continue;
+                if (!Visible(m, pass.cameraPos, x0 - T, x0, y0 - T, y0, mesh.zmin - c[9][3], mesh.zmax)) continue;
                 d->SetStreamSource(0, mesh.vb, 0, sizeof(Vertex));
                 for (int pj = 0; pj < kPatches; ++pj)
                     for (int pi = 0; pi < kPatches; ++pi)
@@ -423,7 +427,7 @@ namespace
                         // Patch (pi, pj): rows pj * 32.., columns pi * 32..: X down by rows, Y down by columns.
                         const float px1 = x0 - float(pj * kPatch) * kUnit, px0 = px1 - float(kPatch) * kUnit;
                         const float py1 = y0 - float(pi * kPatch) * kUnit, py0 = py1 - float(kPatch) * kUnit;
-                        if (!Visible(m, pass.cameraPos, px0, px1, py0, py1, mesh.box[pj][pi][0], mesh.box[pj][pi][1])) continue;
+                        if (!Visible(m, pass.cameraPos, px0, px1, py0, py1, mesh.box[pj][pi][0] - c[9][3], mesh.box[pj][pi][1])) continue;
                         const Range& range = g_ranges[lod][pj][pi];
                         const HRESULT hr = d->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, kGrid * kGrid, range.start, range.primitives);
                         if (FAILED(hr))

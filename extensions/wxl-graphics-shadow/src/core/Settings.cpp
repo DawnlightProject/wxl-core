@@ -79,6 +79,7 @@ namespace wxl::gfx::shadow
         Bool("WXL_GFX_SHADOW_TERRAIN_CASTER", s.terrainCaster);
         Int("WXL_GFX_SHADOW_TERRAIN_CASTER_CASCADES", s.casterCascades, 1, 4);
         Float("WXL_GFX_SHADOW_TERRAIN_CASTER_BIAS", s.casterBias, 0.0f, 4.0f);
+        Float("WXL_GFX_SHADOW_TERRAIN_CASTER_DROP", s.casterDrop, 0.0f, 4.0f);
         Int("WXL_GFX_SHADOW_TERRAIN_CASTER_DETAIL", s.casterDetail, -1, 1);
         Bool("WXL_GFX_SHADOW_HORIZON", s.horizon);
         Float("WXL_GFX_SHADOW_HORIZON_STRENGTH", s.horizonStrength, 0.0f, 1.0f);

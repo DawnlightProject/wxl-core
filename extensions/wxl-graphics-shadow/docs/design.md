@@ -238,6 +238,13 @@ They stay stable:
   engine's cascade renders (`shadows::ChainAfter`, `DescribeRender`), a heightfield mesh of the
   resident horizon tiles is drawn into the same map, writing what the engine's caster writes, so
   hills shadow objects, the ground and the fog's shafts.
+  - The mesh follows only the ground's grid corners (4.17 yd apart, 8 or 17 yd in the coarse bands).
+    Where the ground dips between them, a mesh at their height lies above it and shadowed it in
+    squares. It is lowered straight down by 0.75 yd per 4.17 yd of cell
+    (`WXL_GFX_SHADOW_TERRAIN_CASTER_DROP`), so it never shadows its own ground while a hill still
+    shadows what lies behind it.
+  - The bias along the light (0.3 yd) stays, but under a low sun or moon it is almost horizontal and
+    lowers the mesh by a few centimetres only.
 - **Horizon maps** (`Textures\Forever\Horizon`, 16 azimuths, 4 x 4 tiles around the camera) give the
   terrain's shadow at any distance and any sun angle, beyond the cascades too.
 - **Reading the cascades.** A 3 x 3 tent of bilinear comparisons (nine gathers):

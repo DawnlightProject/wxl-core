@@ -28,8 +28,8 @@ float4 proj0 : register(c4);
 float4 proj1 : register(c5);
 float4 proj2 : register(c6);
 float4 proj3 : register(c7);
-float4 camera : register(c8);
-float4 lightDir : register(c9);
+float4 camera : register(c8);     // xyz the camera, w yards pushed along the light
+float4 lightDir : register(c9);   // xyz the direction the light travels, w yards lowered straight down
 
 struct Output
 {
@@ -40,7 +40,7 @@ struct Output
 Output main(float3 world : POSITION)
 {
     Output o;
-    float3 r = world - camera.xyz + lightDir.xyz * camera.w;
+    float3 r = world - camera.xyz + lightDir.xyz * camera.w - float3(0.0, 0.0, lightDir.w);
     float4 v = r.x * view0 + r.y * view1 + r.z * view2 + view3;
     o.clip = v.x * proj0 + v.y * proj1 + v.z * proj2 + v.w * proj3;
     o.lightView = v.xyz;

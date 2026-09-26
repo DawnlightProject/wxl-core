@@ -138,6 +138,8 @@ namespace
                   "Draws the land into the engine's cascades, so hills shadow objects, the ground and the fog's shafts near the player.");
         ui::Slider("Terrain cascades", &s.casterCascades, 1, 4, "How many cascades receive the terrain: 1 the finest only, 4 every one.");
         ui::Slider("Terrain bias (yards)", &s.casterBias, 0.0f, 4.0f, "The terrain is pushed along the light by this, against self-shadowing on its own slopes.");
+        ui::Slider("Terrain drop (yards)", &s.casterDrop, 0.0f, 4.0f,
+                   "The terrain mesh is lowered by this per 4.17 yd of its cells (twice as much in a cascade drawn at twice the step). Its cells only follow the ground's corners, so where the ground dips between them the mesh sat above it and shadowed it in squares; under a low sun or moon, the bias along the light hardly lowers it at all.");
         ui::Slider("Terrain detail", &s.casterDetail, -1, 1, "-1 finer mesh, 0 the cascade's own step, 1 coarser.");
         ui::Check("Horizon maps", &s.horizon, "The baked terrain horizon: the land's shadow at any distance and sun angle, beyond the cascades too.");
         ui::Slider("Horizon strength", &s.horizonStrength, 0.0f, 1.0f, "How dark the terrain's own shadow is.");

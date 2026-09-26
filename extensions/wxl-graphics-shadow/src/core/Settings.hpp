@@ -98,6 +98,7 @@ namespace wxl::gfx::shadow
         int   terrainCaster = 1;     // the terrain drawn into the engine's cascades
         int   casterCascades = 4;    // cascades that receive it: 1 main only .. 4 all
         float casterBias = 0.3f;     // yards the terrain is pushed along the light
+        float casterDrop = 0.75f;    // yards the terrain is lowered per 4.17 yd of mesh cell (its own surface never shadows itself)
         int   casterDetail = 0;      // -1 finer, 0 the cascade's step, 1 coarser
         int   horizon = 1;           // the baked horizon maps
         float horizonStrength = 1.0f;

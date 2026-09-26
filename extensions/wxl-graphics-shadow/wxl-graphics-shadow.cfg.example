@@ -73,6 +73,11 @@ WXL_GFX_SHADOW_SUN_BIAS=0.0
 WXL_GFX_SHADOW_TERRAIN_CASTER=1
 WXL_GFX_SHADOW_TERRAIN_CASTER_CASCADES=4
 WXL_GFX_SHADOW_TERRAIN_CASTER_BIAS=0.3
+# Yards the terrain mesh is lowered per 4.17 yd of its cells (a cascade drawn at twice the step, twice this).
+# The mesh only follows the ground's grid corners: where the ground dips between them, a mesh left at their
+# height shadowed the ground in squares. The bias above runs along the light, so under a low sun or moon it
+# lowers the mesh by a few centimetres only.
+WXL_GFX_SHADOW_TERRAIN_CASTER_DROP=0.75
 WXL_GFX_SHADOW_TERRAIN_CASTER_DETAIL=0
 # The baked horizon maps (Textures\Forever\Horizon): the land's shadow at any distance.
 WXL_GFX_SHADOW_HORIZON=1
