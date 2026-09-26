@@ -28,8 +28,8 @@
 //
 // Scene units. Linear, scene-referred: 1 is the engine's white. `intensity` is the irradiance at one
 // yard on a surface facing the light, so a lamp gives intensity * window(d / reach) / (d^2 + softRadius^2)
-// at distance d, window(x) = saturate(1 - x^4)^2. The fade, the flicker and the global lamp gain are
-// already folded into it.
+// at distance d, window(x) = saturate(1 - x^4)^2. The fade, the flicker, the global lamp gain and the
+// daylight dimming of lamps outside rooms are already folded into it.
 //
 // Threads. Render thread only.
 
@@ -63,7 +63,12 @@ extern "C" {
 #define WXL_GFX_LIGHT_SOURCE_TUBE    0x02u  ///< lit by the closest point of a segment (extent)
 #define WXL_GFX_LIGHT_SOURCE_COOKIE  0x04u  ///< a baked cookie is known for it
 #define WXL_GFX_LIGHT_SOURCE_ROOM    0x08u  ///< it stands in an interior room
-#define WXL_GFX_LIGHT_SOURCE_ENGINE  0x10u  ///< an engine M2 light (the engine may light models with it)
+/// The engine itself already lights the scene with it: an engine M2 light, or a light it was merged
+/// with (a model-table light standing for the same fixture keeps the flag).
+#define WXL_GFX_LIGHT_SOURCE_ENGINE  0x10u
+/// A WMO MOLT light, or a light merged with one: the building's author baked it into the interior's
+/// vertex colours.
+#define WXL_GFX_LIGHT_SOURCE_BAKED   0x20u
 
 /**
  * @brief One light in HDR, world space. Plain C, no 64-bit member.

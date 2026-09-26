@@ -112,6 +112,25 @@ namespace
         return box;
     }
 
+    /// Whether published room b holds the camera-relative point r: `inset` yards inside its padded
+    /// faces horizontally, |q| <= 1 - inset * |row| (each row's length is 1 / its half size), and
+    /// between its floor and ceiling; lo and hi receive those, unpadded.
+    bool Holds(int b, const float r[3], float inset, float& lo, float& hi)
+    {
+        if (b < 0 || b >= g_count) return false;
+        auto inside = [&](const float* row) {
+            const float q = r[0] * row[0] + r[1] * row[1] + r[2] * row[2] + row[3];
+            const float len = std::sqrt(row[0] * row[0] + row[1] * row[1] + row[2] * row[2]);
+            return std::fabs(q) <= 1.0f - inset * len;
+        };
+        if (!inside(g_rows[b * 3]) || !inside(g_rows[b * 3 + 1])) return false;
+        float a = 0.0f, c = 0.0f;
+        if (!rooms::Height(b, r, a, c) || r[2] < a - kFloorSlack || r[2] > c + kFloorSlack) return false;
+        lo = a;
+        hi = c;
+        return true;
+    }
+
     /// The distance of a kept box from the eye, from its rows (each row's length is 1 / its half size).
     double Distance(const Box& b, const float eye[3])
     {
@@ -280,24 +299,51 @@ namespace wxl::gfx::lights::rooms
         return -1;
     }
 
+    bool Contains(int b, const float r[3], float inset)
+    {
+        float lo = 0.0f, hi = 0.0f;
+        return Holds(b, r, inset, lo, hi);
+    }
+
     int RoomOf(const float r[3], float& lo, float& hi, float inset)
     {
-        // Inside a padded face by `inset` yards: |q| <= 1 - inset * |row| (each row's length is 1 / half size).
-        auto inside = [&](const float* row) {
-            const float q = r[0] * row[0] + r[1] * row[1] + r[2] * row[2] + row[3];
-            const float len = std::sqrt(row[0] * row[0] + row[1] * row[1] + row[2] * row[2]);
-            return std::fabs(q) <= 1.0f - inset * len;
-        };
+        for (int b = 0; b < g_count; ++b)
+            if (g_weights[b] > 0.0f && Holds(b, r, inset, lo, hi)) return b;
+        return -1;
+    }
+
+    int SettledRoomOf(const float r[3], float& lo, float& hi, float inset)
+    {
+        int best = -1;
+        float a = 0.0f, c = 0.0f;
         for (int b = 0; b < g_count; ++b)
         {
-            if (g_weights[b] <= 0.0f) continue;
-            if (!inside(g_rows[b * 3]) || !inside(g_rows[b * 3 + 1])) continue;
-            float a = 0.0f, c = 0.0f;
-            if (!Height(b, r, a, c) || r[2] < a - kFloorSlack || r[2] > c + kFloorSlack) continue;
-            lo = a;
-            hi = c;
-            return b;
+            if (g_weights[b] <= 0.0f || !Holds(b, r, inset, a, c)) continue;
+            // Smallest first: the first room fully in wins outright, else the one furthest faded in.
+            const bool settled = g_weights[b] >= 1.0f;
+            if (settled || best < 0 || g_weights[b] > g_weights[best])
+            {
+                best = b;
+                lo = a;
+                hi = c;
+            }
+            if (settled) break;
         }
-        return -1;
+        return best;
+    }
+
+    uint32_t Mask(int b, const float r[3])
+    {
+        if (b < 0 || b >= g_count) return 0;
+        uint32_t mask = 1u << b;
+        float ownLo = 0.0f, ownHi = 0.0f;
+        if (!Height(b, r, ownLo, ownHi)) return mask;
+        for (int o = 0; o < g_count; ++o)
+        {
+            float lo = 0.0f, hi = 0.0f;
+            if (o == b || !Height(o, r, lo, hi)) continue;
+            if (r[2] >= lo - 0.25f && r[2] <= hi + 0.25f && lo >= ownLo - 1.0f && lo <= ownHi + 1.0f) mask |= 1u << o;
+        }
+        return mask;
     }
 }

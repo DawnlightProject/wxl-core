@@ -68,26 +68,9 @@ namespace
     struct Box { int x0, x1, y0, y1, z0, z1; };
     Box g_boxes[gl::kMaxLights];
 
-    /// The rooms a light may light (bit b for room b of rooms::Rows; 0 outside every room): those whose
-    /// height span holds it (a quarter yard of slack) and whose floor lies within its own room's
-    /// height (a yard of slack). An upstairs bedroom holds no downstairs lamp; the hall under a
-    /// bedroom's lamp has its floor far below the bedroom's; the hall's own gallery, a vestibule and
-    /// rooms side by side pass both. r is the light camera-relative.
-    uint32_t RoomMask(const gl::Light& l, const float r[3])
-    {
-        namespace rooms = gl::rooms;
-        if (l.room < 0) return 0;
-        uint32_t mask = 1u << l.room;
-        float ownLo = 0.0f, ownHi = 0.0f;
-        if (!rooms::Height(l.room, r, ownLo, ownHi)) return mask;
-        for (int b = 0; b < rooms::Count(); ++b)
-        {
-            float lo = 0.0f, hi = 0.0f;
-            if (b == l.room || !rooms::Height(b, r, lo, hi)) continue;
-            if (r[2] >= lo - 0.25f && r[2] <= hi + 0.25f && lo >= ownLo - 1.0f && lo <= ownHi + 1.0f) mask |= 1u << b;
-        }
-        return mask;
-    }
+    /// The rooms a light may light (bit b for room b of rooms::Rows; 0 outside every room), as
+    /// rooms::Mask gives them. r is the light camera-relative.
+    uint32_t RoomMask(const gl::Light& l, const float r[3]) { return gl::rooms::Mask(l.room, r); }
 
     /// The HDR source texture's rows for light i (shaders/wxl/lights/sources.hlsli). cell and q are the
     /// light's cookie rows as the cluster texture holds them.
@@ -113,9 +96,7 @@ namespace
         // A spot reaches full strength a quarter of the way in from its edge, as the legacy cone does.
         s[3][0] = spot ? l.cosCone + (1.0f - l.cosCone) * 0.25f : -2.0f;
         s[3][1] = float(l.profile);
-        s[3][2] = float((l.carried ? WXL_GFX_LIGHT_SOURCE_CARRIED : 0u) | (tube ? WXL_GFX_LIGHT_SOURCE_TUBE : 0u)
-                        | (l.cookieOpen >= 0.0f ? WXL_GFX_LIGHT_SOURCE_COOKIE : 0u) | (l.room >= 0 ? WXL_GFX_LIGHT_SOURCE_ROOM : 0u)
-                        | (l.kind == gl::Kind::M2 ? WXL_GFX_LIGHT_SOURCE_ENGINE : 0u));
+        s[3][2] = float(gl::SourceFlags(l));
         s[3][3] = float(l.family);
         s[4][3] = l.emissiveRadius;
         s[5][0] = gl::SourceEmissive(l);
@@ -360,9 +341,9 @@ namespace wxl::gfx::lights
             r3[0] = std::max(l.size, 0.0f);
             r3[1] = float(l.profile);
             r3[2] = tube ? 1.0f : 0.0f;
-            // Flags: 1 the engine lights models with it already, 2 carried by another model, then 4
-            // times the rooms it may light.
-            r3[3] = (l.kind == Kind::M2 ? 1.0f : 0.0f) + (l.carried ? 2.0f : 0.0f) + 4.0f * float(RoomMask(l, r0));
+            // Flags: 1 the engine lights models with it already (an M2 light, or a table light merged
+            // with one), 2 carried by another model, then 4 times the rooms it may light.
+            r3[3] = (l.engineLit ? 1.0f : 0.0f) + (l.carried ? 2.0f : 0.0f) + 4.0f * float(RoomMask(l, r0));
             if (tube) r1[3] = -2.0f;   // a tube is never a spot
             g_reach[i] = std::max(std::fabs(r0[3]), std::min(l.reach, std::max(Settings().maxRadius, 4.0f)));
             WriteSource(i, l, space.eye, tube, cell, q, RoomMask(l, r0));

@@ -33,16 +33,19 @@ struct IDirect3DTexture9;
 // frame, published with the cluster data (Clusters.cpp, rows past the cluster lists). Shaders
 // sample it with shaders/wxl/lights/cookies.hlsli, inside their per-light loops. The files come
 // through wxl-graphics-extend's baked assets and DDS decoders; the atlas is a DEFAULT-pool texture
-// whose changed cells are copied up from a system-memory twin (Textures.hpp).
+// whose changed cells are copied up from a system-memory twin (Textures.hpp). The bake draws the cage
+// as seen from a point; each cookie is softened by its source's size as it fills its cell
+// (CookieBlur.hpp), so a lamp's frame throws a penumbra, not a hard silhouette.
 namespace wxl::gfx::lights::cookies
 {
     struct Settings
     {
         int   enabled  = 1;      // resolve and publish cookies at all
         float strength = 1.0f;   // 0 no effect, 1 the baked transmittance
-        float floor    = 0.10f;  // least transmittance a cookie may give (light leaks and bounces)
+        float floor    = 0.2f;   // least transmittance a cookie may give (light leaks and bounces)
         float flame    = 0.35f;  // share of the cookie a flame light takes (a flame is no point)
         float tint     = 1.0f;   // how much of a tinted cookie's glass colour its light takes (0 luminance only)
+        float softness = 1.0f;   // the penumbra of the source's size, times this (0 the bake's own edges)
         int   budget   = 32;     // cookies resident at once (atlas cells)
         int   debug    = 0;      // 0 off, 1 draw the atlas in a corner, 2 consumers show the factor
     };

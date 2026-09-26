@@ -68,4 +68,13 @@ namespace wxl::gfx::lights::table
 
     /// Rows loaded (0 before the first Collect, or when the file is missing).
     uint32_t Rows();
+
+    /**
+     * @brief The glowing source of one row: its radius in the model's own units (before the instance's
+     *        scale) and its family (WXL_GFX_LIGHT_FAMILY_*). Loads the table on first use.
+     * @param stem  StemHash of the model, as Light::cookieSource carries it.
+     * @param row   the row's index among the model's, as Light::index carries it for a table light.
+     * @return false when the table has no such row.
+     */
+    bool SourceShape(uint64_t stem, uint32_t row, float& size, uint32_t& family);
 }

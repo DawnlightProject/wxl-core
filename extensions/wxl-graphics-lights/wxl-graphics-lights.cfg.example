@@ -24,12 +24,19 @@
 #WXL_GFX_LIGHTS_HDR_DITHER=1
 
 # ============================================================================= The light model
-# Every lamp's intensity, times this. 1: a torch lights the ground to the game's white at about two
-# yards and fades into the night by ten.
-#WXL_GFX_LIGHTS_GAIN=1.0
+# Every lamp's intensity, times this. 0.35: a torch lights the ground to about 0.4 of the game's white
+# at two yards and fades into the night within ten (1 reaches the game's white at two yards). A lamp's
+# reach follows its brightness.
+#WXL_GFX_LIGHTS_GAIN=0.35
+# A lamp outside every room by full day, times this (the eye adapted to the sun); it follows the sun
+# through dusk and dawn. Lamps inside rooms keep their strength. 1 the same by day as by night.
+#WXL_GFX_LIGHTS_DAY_GAIN=0.35
 # How much a colour temperature moves towards white (the eye's adaptation to warm light). 0 true
 # blackbody colours.
 #WXL_GFX_LIGHTS_ADAPTATION=0.35
+# How far a warm lamp's strongest channel (its red) may run past its brightness, eased softly with the
+# brightness kept, so pools on reddish ground read orange, not red. Lower is yellower; 0 no cap.
+#WXL_GFX_LIGHTS_WARMTH_CAP=0.8
 # The irradiance where a lamp's reach ends, smoothly (scene units). Lower carries light further.
 #WXL_GFX_LIGHTS_CUTOFF=0.01
 # Flicker strength: fires breathe and gutter, candles tremble, lanterns barely move. 0 steady.
@@ -56,7 +63,8 @@
 #WXL_GFX_LIGHTS_GATHER_ENGINE=1
 #WXL_GFX_LIGHTS_GATHER_WMO=1
 #WXL_GFX_LIGHTS_GATHER_TABLE=1
-# How far around the camera lights are gathered, yards (up to 128, faded in and out over a second).
+# How far around the camera lights are gathered, yards. Up to 128 are used: a light chosen stays two
+# seconds at least, fades in and out over a second, and keeps its place while it fades out.
 #WXL_GFX_LIGHTS_GATHER_RADIUS=70
 # One light per fixture, and whether it takes the larger legacy reach of the two it merged.
 #WXL_GFX_LIGHTS_MERGE=1
@@ -106,8 +114,11 @@
 # The baked shadow a lamp's own cage throws (Textures\Forever\Cookies).
 #WXL_GFX_LIGHTS_COOKIES_ENABLED=1
 #WXL_GFX_LIGHTS_COOKIES_STRENGTH=1.0
-# The least a pattern lets through in any direction.
-#WXL_GFX_LIGHTS_COOKIES_FLOOR=0.10
+# The least a pattern lets through in any direction (light leaking and bouncing inside the fixture).
+#WXL_GFX_LIGHTS_COOKIES_FLOOR=0.2
+# How soft a lamp's own frame shadows: 1 the penumbra of its source's size (the bake draws from a point),
+# 0 the bake's own edges, 2 twice as soft.
+#WXL_GFX_LIGHTS_COOKIES_SOFTNESS=1.0
 # How much of its pattern a flame light takes (a flame is a volume, not a point).
 #WXL_GFX_LIGHTS_COOKIES_FLAME=0.35
 # How much of a tinted cookie's glass colour its light takes.

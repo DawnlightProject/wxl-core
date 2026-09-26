@@ -61,6 +61,11 @@ namespace wxl::gfx::lights
         float size;            // radius of the glowing source, yards
         float extent[3];       // half the length of a tube light, world space; zero for a point
         uint8_t carried;       // 1 when its model rides another (a torch in a hand)
+        // The engine lights the scene with it (an M2 light), or the building's author baked it into
+        // interior vertex colours (a MOLT light). A merge keeps both of its pair's, whichever wins:
+        // the engine still lights with an M2 light a table light stands in for.
+        uint8_t engineLit;
+        uint8_t baked;
         const void* owner;     // identity for fading; null for a given light
         uint32_t    index;
         uint32_t id = 0;       // LightId, stable while its owner lives (0 for a given light)
@@ -106,8 +111,10 @@ namespace wxl::gfx::lights
         bool  merge = true;        // one light per fixture
         bool  mergeReach = true;   // the merged light takes the larger legacy reach of the two
         // The HDR model.
-        float gain = 1.0f;         // every lamp's intensity times this
+        float gain = 0.35f;        // every lamp's intensity times this
+        float dayGain = 0.35f;     // a lamp outside every room by full day, times this (the eye adapted to the sun)
         float adaptation = 0.35f;  // share a Kelvin colour moves towards white (the eye's adaptation)
+        float warmthCap = 0.8f;    // room a warm colour's strongest channel keeps above 1, softly (0 off)
         float cutoff = 0.01f;      // irradiance where a light's reach ends, scene units
         bool  legacyChroma = true; // the legacy texture's colours take the families' chroma
     };
@@ -187,11 +194,18 @@ namespace wxl::gfx::lights
     /// had unbounded.
     float PublishedColour(const Light& l, float rgb[3], float& radius);
 
-    /// The HDR intensity rgb of a light this frame: chroma x power x gain x fade x flicker.
+    /// The HDR intensity rgb of a light this frame: chroma x power x gain x daylight x fade x flicker.
     void SourceIntensity(const Light& l, float rgb[3]);
+
+    /// The same without the flicker: what the light gives on average, for rankings that must not
+    /// follow the flame.
+    void SteadyIntensity(const Light& l, float rgb[3]);
 
     /// The luminance of a light's head (its glass or flame), scene units: what bloom finds later.
     float SourceEmissive(const Light& l);
+
+    /// The light's WXL_GFX_LIGHT_SOURCE_* flags, as the source texture and the published sources carry them.
+    uint32_t SourceFlags(const Light& l);
 
     void SetGiven(const void* key, const WXL_GfxLight* lights, int count);
     void SetInteriorGate(bool on);
