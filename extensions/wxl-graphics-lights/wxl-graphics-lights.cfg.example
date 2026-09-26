@@ -74,8 +74,8 @@
 #WXL_GFX_LIGHTS_SURFACE_ROUGHNESS=1.0
 # Wet ground: upward-facing outdoor surfaces turn glossy and a little darker.
 #WXL_GFX_LIGHTS_SURFACE_WETNESS=0.0
-# The glow of the lamp heads (glass, flame), for bloom later.
-#WXL_GFX_LIGHTS_SURFACE_EMISSIVE=1.0
+# The glow of the lamp heads (glass, flame), for bloom later. At 1 the glass burns to a flat yellow.
+#WXL_GFX_LIGHTS_SURFACE_EMISSIVE=0.3
 # Share of the fog's extinction between a lamp and a surface. The fog's density at the eye is eased over
 # about a second and taken at most as 0.03 per yard, for the surfaces and the air alike.
 #WXL_GFX_LIGHTS_SURFACE_FOG_DIMS=1.0
@@ -86,8 +86,13 @@
 # share of the lamp's light, and the soft core (yards) over which it stays even instead of peaking.
 #WXL_GFX_LIGHTS_SURFACE_BOUNCE=0.15
 #WXL_GFX_LIGHTS_SURFACE_BOUNCE_CORE=1.5
-# How much the surfaces add of a light the game already lights the world with (its model lights: a torch
-# in hand, braziers, campfires), and of a building's own light on the room interiors it is baked into.
+# The game's own point lights (its model lights: a torch in hand, braziers, campfires) light terrain three
+# to a chunk, map objects and models per vertex: a second pool under the surfaces' one, cut at chunk edges.
+# 0 (the default) holds them off while the surfaces are lit here (the core's WXL_LIGHT_POLICY off); 1 keeps
+# them, and ENGINE_KEEP below then says how much the surfaces still add of each.
+#WXL_GFX_LIGHTS_ENGINE_LIGHTS=0
+# How much the surfaces add of a light the game already lights the world with (only while
+# ENGINE_LIGHTS=1), and of a building's own light on the room interiors it is baked into.
 #WXL_GFX_LIGHTS_SURFACE_ENGINE_KEEP=0.5
 #WXL_GFX_LIGHTS_SURFACE_BAKED_KEEP=0.35
 # Local adaptation: where lamp light far outshines the game's own, its colour fades up to this much

@@ -33,6 +33,10 @@ namespace wxl::gfx::lights::render
     /// Whether surface lighting and the HDR chain are on (WXL_GFX_LIGHTS_SURFACE).
     int& Enabled();
 
+    /// Whether the engine's own point lights are held off this frame (the surfaces light the world
+    /// alone); the surfaces then keep all of a light the engine would otherwise have lit too.
+    bool EngineLightsOff();
+
     /// One line for the panel: what ran last frame.
     const char* Status();
 }

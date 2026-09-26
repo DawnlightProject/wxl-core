@@ -241,7 +241,14 @@ Per pixel:
 **Not twice what the engine lights.** The engine already lights terrain, buildings and models with
 its own M2 lights (the carried torch, braziers, campfires), and a WMO light is baked into its
 building's interior vertex colours. Added at full strength on top, either showed as a second pool on
-the first. Each light's direct light and bounce are scaled by
+the first. The engine's pool is also cruder: per vertex, and on terrain only the first three lights of
+each chunk, so it stopped at chunk edges.
+- **The engine's point lights are held off** while the surfaces are lit here: the core's scene-lights
+  service is set to its OFF policy (no point light reaches the world; sun, moon, ambient and
+  directional light untouched), and the policy found is restored when the surfaces stop.
+  `WXL_GFX_LIGHTS_ENGINE_LIGHTS=1` keeps them.
+- Each light's direct light and bounce are then scaled by the following, engineKeep counting only
+  while the engine's point lights are on:
 
 ```
 keep  = engine light (WXL_GFX_LIGHT_SOURCE_ENGINE) ? engineKeep : 1           (default 0.5)

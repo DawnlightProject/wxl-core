@@ -28,6 +28,8 @@
 #include "../lights/Rooms.hpp"
 #include "../lights/Sky.hpp"
 
+#include "wxl/SceneLightsApi.h"
+
 #include "wxl/gfx/Matrix.hpp"
 
 #include <algorithm>
@@ -51,6 +53,37 @@ namespace
     bool     g_fieldThisFrame = false;   // decided in the wants, recorded in the block
     uint32_t g_recordedFrame = ~0u;
     char     g_status[256] = "render: waiting for wxl-graphics-extend";
+
+    // --- the engine's own point lights -------------------------------------------------------------------
+    // The engine lights terrain (the first 3 lights of each chunk), map-object groups and models with its
+    // own model lights, per vertex: a second, cruder pool under the one the surfaces add here, cut at
+    // chunk edges wherever a light is not among a chunk's first three. While the surfaces are lit here,
+    // the core's scene-lights service is told to let no point light reach the world (its OFF policy; the
+    // sun, the moon, ambient and directional light are untouched, and so is anything drawn outside the
+    // world pass). The policy found is put back when the surfaces stop.
+    int  g_engineLights = 0;        // WXL_GFX_LIGHTS_ENGINE_LIGHTS: 1 leaves the engine's own pools on
+    bool g_policyOwned = false;
+    int  g_policyBefore = WXL_LIGHT_POLICY_INFLUENCE;
+
+    void FollowEnginePolicy(bool surfacesLit)
+    {
+        const WXL_SceneLightsApi* sl = gl::Lookup<WXL_SceneLightsApi>("wxl.scenelights", WXL_SCENELIGHTS_API_VERSION);
+        if (!sl || sl->structSize < sizeof(WXL_SceneLightsApi) || !sl->SetPolicy || !sl->Policy) return;
+        const bool want = surfacesLit && !g_engineLights;
+        if (want && !g_policyOwned)
+        {
+            g_policyBefore = sl->Policy();
+            sl->SetPolicy(WXL_LIGHT_POLICY_OFF);
+            g_policyOwned = true;
+            LIGHTS_LOG_INFO("render: the engine's own point lights are off while the surfaces are lit here (WXL_GFX_LIGHTS_ENGINE_LIGHTS=1 keeps them)");
+        }
+        else if (!want && g_policyOwned)
+        {
+            sl->SetPolicy(g_policyBefore);
+            g_policyOwned = false;
+            LIGHTS_LOG_INFO("render: the engine's own point lights are back (policy %d)", g_policyBefore);
+        }
+    }
 
     bool VkReady()
     {
@@ -143,8 +176,9 @@ namespace
             g_fieldThisFrame = false;
             const bool surfaces = g_enabled != 0;
             const bool field = fd::Wanted();
-            if (!surfaces && !field) return 0;
-            if (!VkReady()) return 0;
+            const bool ready = (surfaces || field) && VkReady();
+            FollowEnginePolicy(surfaces && ready);
+            if (!ready) return 0;
             gl::Want();
             gpu::EnsurePipelines(gl::Vk());
             if (const WXL_GraphicsShadowApi* shadow = gl::Shadow())
@@ -316,9 +350,12 @@ namespace wxl::gfx::lights::render
 {
     int& Enabled() { return g_enabled; }
 
+    bool EngineLightsOff() { return g_policyOwned; }
+
     void Install()
     {
         g_enabled = ConfigBool("WXL_GFX_LIGHTS_SURFACE", true) ? 1 : 0;
+        g_engineLights = ConfigBool("WXL_GFX_LIGHTS_ENGINE_LIGHTS", false) ? 1 : 0;
         hd::Install();
         sf::Install();
         fd::Install();

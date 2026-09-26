@@ -15,6 +15,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "Surface.hpp"
+#include "Render.hpp"
 #include "../core/Extension.hpp"
 #include "../lights/Lights.hpp"
 
@@ -130,7 +131,9 @@ namespace wxl::gfx::lights::surface
         Set(c.shade, g_cfg.burley ? 1.0f : 0.0f, std::max(g_cfg.specular, 0.0f), std::clamp(g_cfg.wetness, 0.0f, 1.0f),
             FogExtinction() * std::max(g_cfg.fogDims, 0.0f));
         Set(c.shade2, std::max(g_cfg.emissive, 0.0f), std::clamp(g_cfg.roughness, 0.3f, 1.5f), std::clamp(g_cfg.adapt, 0.0f, 1.0f), 0.0f);
-        Set(c.lamp, std::clamp(g_cfg.bounce, 0.0f, 1.0f), std::clamp(g_cfg.bounceCore, 0.25f, 6.0f), std::clamp(g_cfg.engineKeep, 0.0f, 1.0f),
+        // With the engine's own point lights held off, nothing else lights the world with them: keep all.
+        const float engineKeep = render::EngineLightsOff() ? 1.0f : std::clamp(g_cfg.engineKeep, 0.0f, 1.0f);
+        Set(c.lamp, std::clamp(g_cfg.bounce, 0.0f, 1.0f), std::clamp(g_cfg.bounceCore, 0.25f, 6.0f), engineKeep,
             std::clamp(g_cfg.bakedKeep, 0.0f, 1.0f));
         c.roomInfo[2] = std::clamp(g_cfg.outdoorIndoors, 0.0f, 1.0f);
         c.roomInfo[3] = std::clamp(g_cfg.indoorOutdoors, 0.0f, 1.0f);

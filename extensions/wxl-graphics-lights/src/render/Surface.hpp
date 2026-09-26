@@ -32,7 +32,7 @@ namespace wxl::gfx::lights::surface
         float specular = 1.0f;        // GGX strength
         float wetness = 0.0f;         // wet ground on upward-facing outdoor surfaces
         float roughness = 1.0f;       // every roughness times this
-        float emissive = 1.0f;        // the lamp heads' glow
+        float emissive = 0.3f;        // the lamp heads' glow (at 1 the glass burnt to a flat yellow)
         float fogDims = 1.0f;         // share of the fog's extinction between a lamp and a surface
         float outdoorIndoors = 0.12f; // an outdoor light reaching into a room
         float indoorOutdoors = 0.2f;  // a room's light reaching outside every room
