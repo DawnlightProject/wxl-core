@@ -89,9 +89,17 @@ namespace
         bool     priority    = false;  // the faces in dirtyFaces this frame, outside the budget
         uint32_t dirtyFaces  = 0;      // bit f: face f changed (the light moved, or a unit it sees)
         void*    d3dSeen     = nullptr; // D3D texture the contents belong to
+        float    coverage[6] = { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f }; // per face: Coverage() when last drawn (-1 never)
     };
 
     Light    g_lights[kMaxLights];
+
+    // The engine's main exterior map this frame: the window its caster lists were culled to. It follows
+    // the camera, so as the camera turns, casters around a lamp leave the lists and come back. A static
+    // map redrawn from lists that hold less of its surroundings than when it was last drawn loses their
+    // shadows: they popped out and in as the camera moved. See Coverage.
+    struct Window { bool valid; float centre[3], x[3], y[3], half; };
+    Window   g_window = {};
     uint32_t g_count      = 0;
     uint32_t g_budget     = 6;
     uint32_t g_faceSize   = 512;
@@ -486,6 +494,21 @@ namespace
     const float kAxes[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
     const float kUps[6][3]  = { { 0, 0, 1 }, { 0, 0, 1 }, { 0, 0, 1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
 
+    /// How completely the engine's lists hold what face f of a light sees: 1 when the region the face
+    /// covers (half its reach along the axis, that wide across) lies inside the main map's window, down
+    /// to 0 as it leaves it; 1 when the window is unknown. A static face is redrawn only when this is at
+    /// least what it was when the face was last drawn, so a redraw never holds fewer casters.
+    float Coverage(const Light& l, int f)
+    {
+        if (!g_window.valid) return 1.0f;
+        const float r = std::fmax(l.params.radius, 1.0f);
+        float d[3];
+        for (int k = 0; k < 3; ++k) d[k] = l.params.position[k] + kAxes[f][k] * 0.5f * r - g_window.centre[k];
+        const float ax = std::fabs(d[0] * g_window.x[0] + d[1] * g_window.x[1] + d[2] * g_window.x[2]);
+        const float ay = std::fabs(d[0] * g_window.y[0] + d[1] * g_window.y[1] + d[2] * g_window.y[2]);
+        return std::clamp((g_window.half - std::fmax(ax, ay)) / (0.5f * r), 0.0f, 1.0f);
+    }
+
     void RenderFaces(void* query, int slot, uint32_t frame)
     {
         void* dev = Engine();
@@ -534,6 +557,7 @@ namespace
             if (!AtlasBound(dev, l)) return false;
             reinterpret_cast<SceneClearFn>(kSceneClear)(3, 0xFFFFFFFF);
             std::memset(l.state.faceFrame, 0, sizeof l.state.faceFrame);
+            for (float& c : l.coverage) c = -1.0f;
             l.needsClear = false;
             l.track.staleFaces = kAllFaces;
             l.track.lastClearFrame = frame;
@@ -620,6 +644,7 @@ namespace
             for (int k = 0; k < 4; ++k)
                 for (int i = 0; i < 4; ++i) l.state.faceRows[f][k][i] = m[i * 4 + k];
             l.state.faceFrame[f] = frame;
+            l.coverage[f] = Coverage(l, f);
             std::memcpy(l.state.position, l.params.position, sizeof l.state.position);
             l.state.radius = r;
             l.track.staleFaces &= ~(1u << f);
@@ -780,7 +805,11 @@ namespace
             const uint32_t classes = l.flags & (WXL_OMNI_CASTERS_STATIC | WXL_OMNI_CASTERS_DYNAMIC);
             if (classes == WXL_OMNI_CASTERS_STATIC)
             {
-                if (staticChanged) l.track.staleFaces |= l.faceMask;
+                // Only faces the engine's lists now cover at least as well as when they were drawn: a
+                // caster missing from the lists was culled by the camera-bound window, not removed.
+                if (staticChanged)
+                    for (int f = 0; f < 6; ++f)
+                        if ((l.faceMask & (1u << f)) && Coverage(l, f) >= l.coverage[f] - 0.02f) l.track.staleFaces |= 1u << f;
             }
             else if (classes == WXL_OMNI_CASTERS_DYNAMIC && (l.flags & WXL_OMNI_REDRAW_OCCUPIED))
                 dirty |= seen[i] | l.occupied;
@@ -828,6 +857,16 @@ namespace
         g_lastFrame = frame;
         g_facesLast = 0;
 
+        // The window the engine's lists were culled to (its main map's rectangle across the light).
+        sh::RenderPass pass{};
+        g_window.valid = sh::DescribeRender(a, pass) && pass.slot == sh::Slot::Main && pass.halfExtent > 1.0f;
+        if (g_window.valid)
+        {
+            std::memcpy(g_window.centre, pass.centre, sizeof g_window.centre);
+            for (int k = 0; k < 3; ++k) { g_window.x[k] = pass.view[k * 4]; g_window.y[k] = pass.view[k * 4 + 1]; }
+            g_window.half = pass.halfExtent;
+        }
+
         __try
         {
             if (EnsureTargets(frame))
@@ -860,6 +899,7 @@ namespace
         l.haveCasters = false;
         l.needsClear  = true;
         l.occupied    = 0;
+        for (float& c : l.coverage) c = -1.0f;
     }
 
     uint32_t PowerOfTwoFace(uint32_t size)
