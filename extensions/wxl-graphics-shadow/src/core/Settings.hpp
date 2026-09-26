@@ -74,12 +74,13 @@ namespace wxl::gfx::shadow
 
         // Slots.
         float slotHold = 1.0f;       // seconds a light keeps its slot at least
-        float slotFade = 0.5f;       // seconds a slot or map fades in or out
-        float slotMargin = 1.25f;    // how much more important a newcomer must be to take a slot
+        float mapHold = 1.0f;        // seconds a light keeps its map at least
+        float slotFade = 0.5f;       // seconds a slot, map or contact shadow fades in or out
+        float slotMargin = 1.25f;    // how much more important a newcomer must be to take a slot, map or contact shadow
 
         // Bodies.
         int   capsules = 1;
-        float capsuleRange = 60.0f;  // yards around the camera
+        float capsuleRange = 60.0f;  // yards around the player (the camera without one)
         float capsuleRadius = 0.2f;  // radius per yard of height
         float capsulePenumbra = 1.0f;
 

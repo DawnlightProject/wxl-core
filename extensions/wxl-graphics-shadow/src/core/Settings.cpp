@@ -58,6 +58,7 @@ namespace wxl::gfx::shadow
         Float("WXL_GFX_SHADOW_SLOPE_BIAS", s.slopeBias, 0.0f, 4.0f);
 
         Float("WXL_GFX_SHADOW_SLOT_HOLD", s.slotHold, 0.0f, 5.0f);
+        Float("WXL_GFX_SHADOW_MAPS_HOLD", s.mapHold, 0.0f, 5.0f);
         Float("WXL_GFX_SHADOW_SLOT_FADE", s.slotFade, 0.05f, 2.0f);
         Float("WXL_GFX_SHADOW_SLOT_MARGIN", s.slotMargin, 1.0f, 3.0f);
 

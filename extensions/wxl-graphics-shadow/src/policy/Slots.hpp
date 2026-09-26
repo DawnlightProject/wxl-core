@@ -45,6 +45,7 @@ namespace wxl::gfx::shadow::slots
         int                carrier = -1;    ///< capsule index of its carrier
         uint32_t           capsuleMask = 0;
         bool               contact = false; ///< one of the slots with a contact shadow
+        float              contactWeight = 0.0f;  ///< 0..1 its contact shadow's share (fades in and out)
     };
 
     /// A filtered map and the core slots it is drawn from.
@@ -56,14 +57,16 @@ namespace wxl::gfx::shadow::slots
         int      coreUnits = -1;     ///< core slot of its units (still only)
         uint32_t idMain = 0, idUnits = 0;
         float    housing = 0.0f;
+        double   since = 0.0;        ///< when it was given to its light
         uint32_t faceMask = 0x3F;
         bool     ready = false;      ///< every face converted once since it was assigned
         bool     reset = true;       ///< convert every face on the next record
         uint32_t converted[2][6] = {};  ///< core face frames last converted, main and units
     };
 
-    /// Before the world pass: reads the candidates (handed in, or wxl-graphics-lights' list), ranks,
-    /// fades, chooses the maps and hands the core its lights. dt in seconds.
+    /// Before the world pass, after bodies::Update: reads the candidates (handed in, or
+    /// wxl-graphics-lights' list), ranks them from the player (bodies::Focus), fades, chooses the maps
+    /// and the contact shadows, and hands the core its lights. dt in seconds.
     void Choose(const float eye[3], double now, float dt);
 
     /// Drops every map and gives the core back (settings turned the maps off, or the service stops).

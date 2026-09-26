@@ -53,10 +53,10 @@
 #define SH_ROW_TRACE     14   // trace width, height; pixels per trace texel (1 or 2); 0
 #define SH_ROW_CONTACT   15   // sun length, lamp length, thickness, strength (0 off)
 #define SH_ROW_CONTACT2  16   // most steps towards the sun, towards a lamp (one every 1.5 px up to these); body that shines (0 sun, 1 moon, -1 none), distance fade yards
-#define SH_ROW_CSLOTS    17   // the slots with a contact shadow (-1 none)
-#define SH_ROW_DEBUG     18   // view, slot, 0, 0
-#define SH_ROW_ATLASVIEW 19   // the atlas view: uv scale x, y; 0; 0
-#define SH_PASS_ROWS     20
+#define SH_ROW_DEBUG     17   // view, slot, 0, 0
+#define SH_ROW_ATLASVIEW 18   // the atlas view: uv scale x, y; 0; 0
+#define SH_ROW_CSLOTS    19   // 8 rows, two slots each: slot s's contact share (0 none; it fades) and housing yards (the march skips its own fixture) in row s / 2, xy (s even) or zw (s odd)
+#define SH_PASS_ROWS     27
 
 // --- the convert pass's rows -----------------------------------------------------------------------------
 #define SH_CROW_LIGHT    0    // where the core rendered the maps from (rel) xyz, radius

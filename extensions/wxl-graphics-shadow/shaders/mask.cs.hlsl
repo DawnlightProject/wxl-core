@@ -29,8 +29,8 @@
 // receivers and hit by their neighbours, which is what drew combs of copies of it. A sample occludes
 // when the scene lies in front of the ray point by more than a small bias and less than the thickness,
 // and not on the receiver's own plane (which is what removes self-intersection stripes on grazing
-// surfaces). Returns 1 lit.
-float Contact(float3 p, float3 n, float3 to, int maxSteps)
+// surfaces), nor within `housing` yards of the lamp at `lamp` (0 for the sun and the moon). Returns 1 lit.
+float Contact(float3 p, float3 n, float3 to, int maxSteps, float3 lamp, float housing)
 {
     float4 C = P[SH_ROW_CONTACT];
     if (C.w <= 0.0 || maxSteps <= 0) return 1.0;
@@ -77,6 +77,11 @@ float Contact(float3 p, float3 n, float3 to, int maxSteps)
         float3 ps = ShRel((float2(px) + 0.5) / size, ndc);
         float tolerance = 0.03 + 0.004 * zs;
         if (abs(dot(ps - p, n)) < tolerance) continue;
+        // The lamp's own fixture (its cage and frame, a torch and the hand holding it) blocks nothing, as
+        // in its map. On a wall just behind a lantern the march ends on the lantern's frame on screen,
+        // and counting it drew a dilated copy of the lantern's outline on the wall.
+        float3 fromLamp = ps - lamp;
+        if (dot(fromLamp, fromLamp) < housing * housing) continue;
         float bias = 0.01 + 0.0015 * w;
         float o = saturate((delta - bias) / (0.04 + 0.006 * w)) * saturate((thickness - delta) / (0.3 * thickness));
         occ = max(occ, o * (1.0 - 0.5 * t));
@@ -88,11 +93,12 @@ float Contact(float3 p, float3 n, float3 to, int maxSteps)
     return 1.0 - occ * C.w * edge * far;
 }
 
-bool IsContactSlot(int s, out int k)
+// Slot s's contact share (0: no contact shadow; it fades in and out as the slot gains or loses one)
+// and its housing radius in yards.
+float2 ContactSlot(int s)
 {
-    float4 c = P[SH_ROW_CSLOTS];
-    k = int(c.x) == s ? 0 : (int(c.y) == s ? 1 : (int(c.z) == s ? 2 : (int(c.w) == s ? 3 : -1)));
-    return k >= 0;
+    float4 r = P[SH_ROW_CSLOTS + s / 2];
+    return (s & 1) != 0 ? r.zw : r.xy;
 }
 
 [numthreads(8, 8, 1)]
@@ -119,7 +125,7 @@ void main(uint3 id : SV_DispatchThreadID)
     int body = int(C2.z);
     float3 towards = body == 1 ? ShadowToMoon() : ShadowToSun();
     float terrain = body >= 0 ? ShadowTerrain(p, towards) : 1.0;
-    float contact = body >= 0 ? Contact(p, n, p + towards * P[SH_ROW_CONTACT].x, int(C2.x)) : 1.0;
+    float contact = body >= 0 ? Contact(p, n, p + towards * P[SH_ROW_CONTACT].x, int(C2.x), float3(0.0, 0.0, 0.0), 0.0) : 1.0;
     float sun = ShadowSunWeight() > 0.001 ? ShadowSun(p, n) : 1.0;
     float moon = ShadowMoonWeight() > 0.001 ? ShadowMoon(p, n) : 1.0;
     if (body == 0) sun *= contact;
@@ -134,8 +140,8 @@ void main(uint3 id : SV_DispatchThreadID)
         {
             int s = int(layer * 4u + c);
             float vis = ShadowLight(s, p, n);
-            int k;
-            if (vis > 0.01 && IsContactSlot(s, k))
+            float2 cw = ContactSlot(s);
+            if (vis > 0.01 && cw.x > 0.0)
             {
                 int base = WXL_SHADOW_ROW_SLOTS + s * WXL_SHADOW_SLOT_ROWS;
                 float4 S0 = wxlShadow[base];
@@ -144,8 +150,8 @@ void main(uint3 id : SV_DispatchThreadID)
                 if (dl < S0.w && !WxlShadowInsideCapsule(p, int(wxlShadow[base + 3].y), wxlShadow[base + 3].z))
                 {
                     float reach = min(P[SH_ROW_CONTACT].y, 0.5 * dl);
-                    float cs = Contact(p, n, p + toLight / max(dl, 1e-4) * reach, int(C2.y));
-                    vis *= lerp(1.0, cs, saturate(wxlShadow[base + 2].x));
+                    float cs = Contact(p, n, p + toLight / max(dl, 1e-4) * reach, int(C2.y), S0.xyz, cw.y);
+                    vis *= lerp(1.0, cs, saturate(wxlShadow[base + 2].x) * saturate(cw.x));
                 }
             }
             v[c] = vis;

@@ -1,4 +1,4 @@
-// wxl-graphics-shadow: the body capsules -- the player, NPCs and creatures nearest the camera, as
+// wxl-graphics-shadow: the body capsules -- the player, NPCs and creatures nearest the player, as
 // vertical capsules from the feet to the head, for shadows of lamps without a map.
 // Copyright (C) 2026 WarcraftXL
 //
@@ -28,13 +28,19 @@ namespace wxl::gfx::shadow::bodies
         float a[3];                 ///< world, the lower sphere's centre
         float b[3];                 ///< world, the upper sphere's centre
         float radius;
+        float weight;               ///< 0..1 its occlusion's share: fades in as it is listed, out as it leaves
         unsigned long long guid;
         bool  player;               ///< the active player
     };
 
-    /// Walks the units once a frame (render thread): the nearest WXL_GFX_SHADOW_CAPSULES to the eye
-    /// within range.
-    void Update(const float eye[3], float range, float radiusPerYard);
+    /// Walks the units once a frame (render thread): the WXL_GFX_SHADOW_CAPSULES nearest the player (the
+    /// eye when there is none) within range. A listed unit stays listed unless a newcomer is clearly
+    /// nearer, and each fades in and out by its GUID (at once when fade is false). dt in seconds.
+    void Update(const float eye[3], float range, float radiusPerYard, float dt, bool fade);
+
+    /// Where this frame's shadows are ranked from (world): the active player's feet, or the eye when
+    /// there is no player.
+    const float* Focus();
 
     int Count();
     const Capsule* List();

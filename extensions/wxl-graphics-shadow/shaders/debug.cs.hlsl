@@ -57,7 +57,7 @@ float CapsuleHeat(float3 p)
         float t, s;
         WxlShadowClosest(float3(0.0, 0.0, 0.0), p, A.xyz, B.xyz, t, s);
         float d = length(p * t - (A.xyz + (B.xyz - A.xyz) * s));
-        heat = max(heat, 1.0 - smoothstep(A.w * 0.8, A.w, d));
+        heat = max(heat, (1.0 - smoothstep(A.w * 0.8, A.w, d)) * saturate(B.w));
     }
     return heat;
 }

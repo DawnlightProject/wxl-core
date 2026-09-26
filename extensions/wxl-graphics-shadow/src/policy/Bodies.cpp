@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 namespace
@@ -27,13 +28,18 @@ namespace
     namespace bd    = wxl::gfx::shadow::bodies;
     namespace world = wxl::game::world;
 
-    bd::Capsule g_list[WXL_GFX_SHADOW_CAPSULES];
+    constexpr int   kCapsules = WXL_GFX_SHADOW_CAPSULES;
+    constexpr float kKeep = 1.25f;   // a listed unit ranks as if this many times nearer than it is
+    constexpr float kFade = 0.3f;    // seconds a unit's occlusion takes to fade in or out
+
+    bd::Capsule g_list[kCapsules];
     int         g_count = 0;
+    float       g_focus[3] = {};
 
     struct Seen
     {
         bd::Capsule c;
-        float       d2;
+        float       rank;       // squared distance to the focus, less for a listed unit
     };
     std::vector<Seen> g_seen;   // kept for its capacity
 
@@ -54,19 +60,39 @@ namespace
         for (int k = 0; k < 3; ++k) q[k] = c.a[k] + ab[k] * t;
         return std::sqrt(Dist2(p, q));
     }
+
+    bool Listed(unsigned long long guid)
+    {
+        for (int i = 0; i < g_count; ++i)
+            if (g_list[i].guid == guid) return true;
+        return false;
+    }
+
+    int SeenIndex(unsigned long long guid)
+    {
+        for (size_t k = 0; k < g_seen.size(); ++k)
+            if (g_seen[k].c.guid == guid) return int(k);
+        return -1;
+    }
 }
 
 namespace wxl::gfx::shadow::bodies
 {
-    void Update(const float eye[3], float range, float radiusPerYard)
+    void Update(const float eye[3], float range, float radiusPerYard, float dt, bool fade)
     {
-        g_seen.clear();
+        // Ranked from the player: the camera orbits it in third person, so a list ranked from the eye
+        // changed hands, and unit shadows popped, whenever the view turned.
         const unsigned long long player = world::ActivePlayerGuid();
+        void* self = player ? world::ResolveObject(player, world::kTypeMaskPlayer) : nullptr;
+        if (self) world::UnitPosition(self, g_focus);
+        else std::memcpy(g_focus, eye, sizeof g_focus);
+
+        g_seen.clear();
         const float range2 = range * range;
         world::ForEachObject(world::kTypeMaskUnit, [&](unsigned long long guid, void* obj) {
             float feet[3];
             world::UnitPosition(obj, feet);
-            const float d2 = Dist2(feet, eye);
+            const float d2 = Dist2(feet, g_focus);
             if (d2 > range2) return true;
             float head[3];
             world::NamePosition(obj, head);
@@ -81,14 +107,44 @@ namespace wxl::gfx::shadow::bodies
             // A capsule standing on the feet, its caps inside the body's height.
             s.c.a[2] = feet[2] + r;
             s.c.b[2] = feet[2] + std::max(height - r, r);
-            s.d2 = d2;
+            // A listed unit keeps its row unless a newcomer is clearly nearer, so two units near the
+            // cut-off do not trade places every frame.
+            s.rank = Listed(guid) ? d2 / (kKeep * kKeep) : d2;
             g_seen.push_back(s);
             return true;
         });
-        std::sort(g_seen.begin(), g_seen.end(), [](const Seen& x, const Seen& y) { return x.d2 < y.d2; });
-        g_count = std::min(int(g_seen.size()), WXL_GFX_SHADOW_CAPSULES);
-        for (int i = 0; i < g_count; ++i) g_list[i] = g_seen[size_t(i)].c;
+        std::sort(g_seen.begin(), g_seen.end(), [](const Seen& x, const Seen& y) { return x.rank < y.rank; });
+        const int wanted = std::min(int(g_seen.size()), kCapsules);
+
+        // Listed units fade in while wanted, else fade out (following the unit while it is still seen,
+        // at its last place once it is gone) and give their row up at nothing. The order of the rows is
+        // kept, though nothing relies on it across frames: the slots find their capsules every frame.
+        const float step = fade ? dt / kFade : 1.0f;
+        bd::Capsule kept[kCapsules];
+        int n = 0;
+        for (int i = 0; i < g_count; ++i)
+        {
+            const int k = SeenIndex(g_list[i].guid);
+            const float weight = k >= 0 && k < wanted ? std::min(g_list[i].weight + step, 1.0f) : g_list[i].weight - step;
+            if (weight <= 0.0f) continue;
+            kept[n] = k >= 0 ? g_seen[size_t(k)].c : g_list[i];
+            kept[n].weight = weight;
+            ++n;
+        }
+        // Newcomers take the rows left, fading in from nothing.
+        for (int k = 0; k < wanted && n < kCapsules; ++k)
+        {
+            const bd::Capsule& c = g_seen[size_t(k)].c;
+            if (std::any_of(kept, kept + n, [&](const bd::Capsule& x) { return x.guid == c.guid; })) continue;
+            kept[n] = c;
+            kept[n].weight = fade ? 0.0f : 1.0f;
+            ++n;
+        }
+        std::copy(kept, kept + n, g_list);
+        g_count = n;
     }
+
+    const float* Focus() { return g_focus; }
 
     int Count() { return g_count; }
     const Capsule* List() { return g_list; }
