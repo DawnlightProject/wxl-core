@@ -205,6 +205,10 @@ namespace
         gpu::BeginTimers(vk.cmd, vk.slot);
         gpu::ClearFresh(api, vk.cmd);
 
+        // The fog's thinning of lamp light, eased once a frame here so the surfaces and the field read
+        // the same value.
+        gl::FollowFogExtinction(f.deltaTime);
+
         static gpu::Constants c;
         std::memset(&c, 0, sizeof c);
         FillFrame(f, c, lightsReady, mono, masks, halo, haveShadow ? &shadow : nullptr);

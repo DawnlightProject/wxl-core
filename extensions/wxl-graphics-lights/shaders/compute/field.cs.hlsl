@@ -2,9 +2,9 @@
 // the camera-frustum grid, which subdivides the light clusters exactly (10 x 10 x 4 froxels a cluster).
 // For each lamp of the froxel's cluster, the in-scattered light per unit scattering coefficient,
 // averaged over the froxel's depth span: the soft-core inverse square integrated in closed form along
-// the view ray, times the window, cone, profile, cookie (prefiltered by the froxel's footprint), room
-// gate, the shadow service's point shadow (the .shadow variant) and the medium's thinning, all taken at
-// the span's point closest to the lamp. Written:
+// the view ray (the core never narrower than the froxel), times the window, cone, profile, cookie
+// (prefiltered by the froxel's footprint), room gate, the shadow service's point shadow (the .shadow
+// variant) and the medium's thinning, all taken at the span's point closest to the lamp. Written:
 //   outScatter    rgb towards the eye with the dual Henyey-Greenstein phase, a luminance of the isotropic part
 //   outAmbient    rgb with the isotropic phase, a directionality 0..1
 //   outDirection  xyz mean propagation direction (unit), w total luminance
@@ -63,9 +63,12 @@ void main(uint3 id : SV_DispatchThreadID)
     float d0 = FieldDistance(float(id.z) / fieldC.z);
     float d1 = FieldDistance(float(id.z + 1u) / fieldC.z);
     float span = max(d1 - d0, 1e-3);
-    float3 centre = dir * (0.5 * (d0 + d1));
-    // The froxel's size across, for the cookies' prefilter: the larger of its depth span and its width.
-    float across = max(span, 0.5 * (d0 + d1) * proj.z * screen.y / fieldC.y);
+    float mid = 0.5 * (d0 + d1);
+    float3 centre = dir * mid;
+    // The froxel's width across the ray (the larger of its two sides), and its size for the cookies'
+    // prefilter: the larger of that width and its depth span.
+    float width = mid * max(2.0 / max(abs(proj.x) * fieldC.x, 1e-4), proj.z * screen.y / fieldC.y);
+    float across = max(span, width);
 
     RoomSet rs = RoomsAt(centre, float3(0.0, 0.0, 0.0), false);
 
@@ -81,10 +84,14 @@ void main(uint3 id : SV_DispatchThreadID)
         WxlLightSource s = WxlReadSource(sourceTex, i);
         if (s.reach <= 0.0) continue;
         float3 P = LightPoint(centre, s);
-        // The ray's closest approach to the lamp, and the closest point of the froxel's span.
+        // The ray's closest approach to the lamp, and the closest point of the froxel's span. The column
+        // is evaluated along its centre ray only, so the soft core is widened to half the froxel's width:
+        // a lamp's core (a tenth of a yard) is narrower than a distant column, and its halo's peak swung
+        // two to four times over as the lamp slid from one column's ray to between two while the camera
+        // moved. The depth span needs nothing of the kind: it is integrated exactly.
         float t0 = dot(P, dir);
         float3 perp = P - dir * t0;
-        float h2 = dot(perp, perp) + s.softRadius * s.softRadius;
+        float h2 = dot(perp, perp) + s.softRadius * s.softRadius + 0.25 * width * width;
         float tc = clamp(t0, d0, d1);
         float3 q = dir * tc;
         float3 L = q - P;
@@ -101,7 +108,7 @@ void main(uint3 id : SV_DispatchThreadID)
         float3 shape = LightShape(i, s, l, footprint);
         float gate = LightRoomGate(s, rs);
         float vis = PointShadow(i, q);
-        float3 rgb = LightHot(s.intensity, dl, s.softRadius, s.hot) * (falloff * gate * vis * LightMedium(dl)) * shape;
+        float3 rgb = LightHot(s.intensity, dl, s.emissiveRadius, s.hot) * (falloff * gate * vis * LightMedium(dl)) * shape;
         float lum = Luma(rgb);
         if (lum <= 0.0) continue;
         // The light travels along l; it leaves towards the eye along -dir.

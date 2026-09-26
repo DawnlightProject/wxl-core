@@ -241,7 +241,7 @@ namespace wxl::gfx::lights::field
         ui::Check("Shadows in the air", &s.shadows,
                   "The shadow service's shadows cut the lamps' light in the air too: a passer-by throws a wedge of darkness through the mist. Needs wxl-graphics-shadow.");
         ui::Slider("Mist thins lamps", &s.thinning, 0.0f, 3.0f,
-                   "How much the fog around the camera thins a lamp's light on its way through the air: in thick fog a lamp's glow stays close to it.");
+                   "How much the fog around the camera thins a lamp's light on its way through the air: in thick fog a lamp's glow stays close to it. The fog's density is eased over about a second and taken at most as a light haze, as for the surfaces.");
         ui::Slider("Forward scattering", &s.phase[0], 0.0f, 0.95f,
                    "How strongly the air throws lamp light onwards, so a lamp between you and the mist glows brighter. The fog sets this itself once adapted.");
         ui::Slider("Back scattering", &s.phase[1], -0.95f, 0.0f,

@@ -72,6 +72,14 @@ WxlLightSource WxlReadSource(Texture2D<float4> sources, uint index)
     return s;
 }
 
+// The flags of row 3.z (WXL_GFX_LIGHT_SOURCE_*), for WxlSourceHas.
+static const uint kWxlSourceCarried = 0x01u;   // rides a unit (a torch in a hand)
+static const uint kWxlSourceTube    = 0x02u;   // lit by the closest point of a segment (extent)
+static const uint kWxlSourceCookie  = 0x04u;   // a baked cookie is known for it
+static const uint kWxlSourceRoom    = 0x08u;   // it stands in an interior room
+static const uint kWxlSourceEngine  = 0x10u;   // the engine itself already lights the scene with it
+static const uint kWxlSourceBaked   = 0x20u;   // a WMO light, already baked into its interior's vertex colours
+
 bool WxlSourceHas(float flags, uint bit) { return (uint(flags + 0.5) & bit) != 0u; }
 
 // The window that takes a light to zero at its reach with a zero slope: saturate(1 - x^4)^2.

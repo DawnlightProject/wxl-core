@@ -1,8 +1,10 @@
 // wxl-graphics-lights: the surfaces, deferred, full resolution. Per pixel, from the G-buffer (depth, RT1
 // normals, RT2 albedo and material): every lamp of the pixel's cluster -- window and soft core, cone,
-// profile, cookie, room gate, the shadow service's slot mask, the fog's thinning -- as energy-conserving
-// Burley diffuse and GGX specular, plus the glow of the lamp heads and, without the fog, the halo
-// integrated along the pixel's ray. The sun and moon factor goes to alpha. docs/design.md, section 6.
+// profile, cookie, room gate, the shadow service's slot mask, the fog's thinning, less what the engine
+// already lights with it -- as energy-conserving Burley diffuse and GGX specular, a soft bounce that
+// also reaches the sides a lamp does not face, and a local adaptation of the lamps' tint; plus the glow
+// of the lamp heads and, without the fog, the halo integrated along the pixel's ray. The sun and moon
+// factor goes to alpha. docs/design.md, section 6.
 // Written: rgb the added radiance (linear, scene units), a the factor on the engine's colour.
 // Copyright (C) 2026 WarcraftXL
 //
@@ -58,6 +60,30 @@ float SunFactor(int2 px, float3 n, float roomW)
     float lit = sunColors.y + sunColors.x * ndl;
     float ratio = saturate((sunColors.y + sunColors.x * ndl * want) / max(lit, 1e-3));
     return lerp(ratio, 1.0, saturate(roomW));
+}
+
+// How much of a light the surfaces add. The engine already lights the world with its own M2 lights (a
+// carried torch, braziers, campfires), and a WMO light is already baked into its building's interior
+// vertex colours: at full strength both would count twice, a second pool pasted on the first. The baked
+// share only goes where the bake is, on building pixels inside a room.
+float LightKeep(WxlLightSource s, bool building, float roomW)
+{
+    float keep = WxlSourceHas(s.flags, kWxlSourceEngine) ? lamp.z : 1.0;
+    if (building && WxlSourceHas(s.flags, kWxlSourceBaked)) keep *= lerp(1.0, lamp.w, saturate(roomW));
+    return keep;
+}
+
+// Local adaptation: where the lamps far outshine the engine's own light, the eye adapts to them and
+// their tint fades a little (von Kries), so a torch-lit wall reads warm white rather than orange while
+// the dim edge of its pool keeps its colour. The engine's level is its ambient plus its diffuse on the
+// ground outdoors (linear), and a fixed interior level inside rooms, where it lights with its own light.
+float AdaptShare(float3 diffuse, float roomW)
+{
+    if (shade2.z <= 0.0) return 0.0;
+    float outdoor = pow(saturate(sunColors.y + sunColors.x * saturate(sunDir.z)), 2.2);
+    float engine = lerp(outdoor, 0.1, saturate(roomW));
+    float ratio = Luma(diffuse) / max(engine, 0.02);
+    return shade2.z * ratio / (1.0 + ratio);
 }
 
 // Burley's diffuse, normalised like Lambert (1 at normal incidence and roughness 0).
@@ -147,7 +173,8 @@ void main(uint3 id : SV_DispatchThreadID)
     // The footprint of this pixel in yards, for the cookies' prefilter.
     float pixelYards = dist * proj.z / max(ndv, 0.25);
 
-    float3 diffuse = 0.0, specular = 0.0, emissive = 0.0, cookieSum = 0.0, shadowView = 0.0;
+    float3 diffuse = 0.0, specular = 0.0, emissive = 0.0, cookieSum = 0.0, shadowView = 0.0, bounce = 0.0;
+    bool building = abs(kind - 2.0) < 0.5;
     float2 list = LightList(uv, dist);
     uint count = uint(list.y);
     [loop] for (uint e = 0; e < count; ++e)
@@ -170,15 +197,32 @@ void main(uint3 id : SV_DispatchThreadID)
         }
 
         float ndl = dot(n, l);
+        if (ndl <= 0.0 && lamp.x <= 0.0) continue;
+        float cone = LightCone(s, -l);
+        if (cone <= 0.0) continue;
+        float gate = LightRoomGate(s, rs);
+        float thin = Isolated(LIGHTS_ISO_NO_FOG) ? 1.0 : exp(-shade.w * dl);
+        float keep = LightKeep(s, building, roomW);
+
+        // The bounce: the light the pool throws back onto its surroundings, a small share of the lamp's
+        // over a wide core, so it never peaks at the source. Taken before the facing test and without
+        // the shadow slot, since it arrives from the lit surfaces around the pixel, not from the lamp:
+        // the back of a pillar and the shadowed side of a crate take it too, and a pool no longer
+        // stands pasted on an unlit scene. A surface facing away gets half.
+        if (lamp.x > 0.0)
+        {
+            float core = max(s.softRadius, lamp.y);
+            float b = WxlSourceFalloff(d2, s.reach, core) * (cone * gate * thin * keep) * (0.75 + 0.25 * ndl);
+            bounce += s.intensity * LightMeanShape(i, s) * b;
+        }
+
         if (ndl <= 0.0) continue;
-        float E = WxlSourceFalloff(d2, s.reach, s.softRadius) * LightCone(s, -l);
+        float E = WxlSourceFalloff(d2, s.reach, s.softRadius) * cone;
         if (E <= 0.0) continue;
         float footprint = pixelYards / max(dl, 0.05);
         float3 shape = LightShape(i, s, -l, footprint);
-        float gate = LightRoomGate(s, rs);
         float vis = SlotVisibility(px, SlotOf(i));
-        float thin = Isolated(LIGHTS_ISO_NO_FOG) ? 1.0 : exp(-shade.w * dl);
-        float3 rgb = LightHot(s.intensity, dl, s.softRadius, s.hot) * (E * gate * vis * thin) * shape;
+        float3 rgb = LightHot(s.intensity, dl, s.emissiveRadius, s.hot) * (E * gate * vis * thin * keep) * shape;
 
         float3 H = normalize(l + V);
         float ldh = saturate(dot(l, H));
@@ -192,6 +236,11 @@ void main(uint3 id : SV_DispatchThreadID)
         float slot = SlotOf(i);
         if (slot > -0.5) shadowView += kSlotColours[int(slot + 0.5) & 3] * (1.0 - vis);
     }
+
+    diffuse += bounce * lamp.x;
+    float adapt = AdaptShare(diffuse, roomW);
+    diffuse = lerp(diffuse, Luma(diffuse).xxx, adapt);
+    specular = lerp(specular, Luma(specular).xxx, adapt);
 
     float sun = SunFactor(px, n, roomW);
     float3 added = albedo * diffuse + specular + emissive;

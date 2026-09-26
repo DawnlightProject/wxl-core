@@ -76,11 +76,23 @@
 #WXL_GFX_LIGHTS_SURFACE_WETNESS=0.0
 # The glow of the lamp heads (glass, flame), for bloom later.
 #WXL_GFX_LIGHTS_SURFACE_EMISSIVE=1.0
-# Share of the fog's extinction between a lamp and a surface.
+# Share of the fog's extinction between a lamp and a surface. The fog's density at the eye is eased over
+# about a second and taken at most as 0.03 per yard, for the surfaces and the air alike.
 #WXL_GFX_LIGHTS_SURFACE_FOG_DIMS=1.0
 # An outdoor light reaching into a room; a room's light reaching outside every room.
 #WXL_GFX_LIGHTS_SURFACE_OUTDOOR_INDOORS=0.12
 #WXL_GFX_LIGHTS_SURFACE_INDOOR_OUTDOORS=0.2
+# The light a lamp's pool bounces back onto its surroundings, the sides it does not face included: its
+# share of the lamp's light, and the soft core (yards) over which it stays even instead of peaking.
+#WXL_GFX_LIGHTS_SURFACE_BOUNCE=0.15
+#WXL_GFX_LIGHTS_SURFACE_BOUNCE_CORE=1.5
+# How much the surfaces add of a light the game already lights the world with (its model lights: a torch
+# in hand, braziers, campfires), and of a building's own light on the room interiors it is baked into.
+#WXL_GFX_LIGHTS_SURFACE_ENGINE_KEEP=0.5
+#WXL_GFX_LIGHTS_SURFACE_BAKED_KEEP=0.35
+# Local adaptation: where lamp light far outshines the game's own, its colour fades up to this much
+# towards white (the eye adapts to it). 0 keeps every lamp's colour.
+#WXL_GFX_LIGHTS_SURFACE_ADAPT=0.4
 # The sun and moon shadow the game's own light lacks (from wxl-graphics-shadow), and how far the game's
 # cascade shadows are deepened.
 #WXL_GFX_LIGHTS_SURFACE_SUN=1
@@ -91,7 +103,7 @@
 #WXL_GFX_LIGHTS_FIELD=1
 # wxl-graphics-shadow's point shadows in the air.
 #WXL_GFX_LIGHTS_FIELD_SHADOWS=1
-# Share of the fog's extinction between a lamp and the air it lights.
+# Share of the fog's extinction between a lamp and the air it lights (eased and capped as for the surfaces).
 #WXL_GFX_LIGHTS_FIELD_THINNING=1.0
 # The dual Henyey-Greenstein phase of the field's towards-the-eye image (the fog sets it itself).
 #WXL_GFX_LIGHTS_FIELD_PHASE_FORWARD=0.6

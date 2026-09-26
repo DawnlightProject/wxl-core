@@ -230,11 +230,64 @@ Per pixel:
   material's kind and gloss. Roughness is 0.8 for terrain (down to 0.35 where its gloss is high),
   0.6 for buildings and 0.7 for models. Wetness lowers it on upward-facing outdoor surfaces.
 - **Each light of the cluster's list:** window, soft core, cone, profile, cookie, room gate, the
-  shadow slot's mask value, and fog dimming (`exp(-k * extinction * d)`, from the fog's camera
-  density).
+  shadow slot's mask value, fog dimming (`exp(-k * extinction * d)`, below) and the share the engine
+  does not already light (below). A flame's hot core whitens its light within three glow radii of
+  the source (`max(3 * emissiveRadius, 0.3)` yd): the lamp head's own size, never a carried light's
+  1 yd soft core, which had whitened six yards around every torch in hand.
 - **Diffuse.** Burley, normalised like Lambert, energy-conserving with the specular: `(1 - F)`.
 - **Specular.** GGX with height-correlated Smith visibility and Schlick Fresnel (F0 0.04).
 - **Emissive heads** (section 3).
+
+**Not twice what the engine lights.** The engine already lights terrain, buildings and models with
+its own M2 lights (the carried torch, braziers, campfires), and a WMO light is baked into its
+building's interior vertex colours. Added at full strength on top, either showed as a second pool on
+the first. Each light's direct light and bounce are scaled by
+
+```
+keep  = engine light (WXL_GFX_LIGHT_SOURCE_ENGINE) ? engineKeep : 1           (default 0.5)
+keep *= lerp(1, bakedKeep, roomW)   for a WMO light (..._BAKED) on a building pixel (default 0.35)
+```
+
+with `roomW` how much the pixel is inside a room: the bake is only on the building's interior. The
+air is not scaled: the engine lights no fog.
+
+**Bounce.** Without it, the back and the shadowed side of anything near a lamp stayed at the
+engine's night level (about 0.04) while the pool reached 1 to 3, and pools looked pasted onto the
+scene. Each light also adds, before the facing test and without its shadow slot (the bounce comes
+from the lit surfaces around the pixel, not from the lamp):
+
+```
+core    = max(softRadius, bounceCore)                                          (default 1.5 yd)
+bounce += I * mean(cookie) * window(d / R) / (d^2 + core^2) * cone * gate * thin * keep
+            * (0.75 + 0.25 NdotL)
+diffuse += share * bounce                                                      (default 0.15)
+```
+
+The wide core keeps it from peaking at the source; `mean(cookie)` is the cookie's mean colour, so
+tinted glass tints its bounce and a cage takes its share away; a surface facing away gets half.
+
+**Local adaptation.** Where lamp light far outshines the engine's own, the eye adapts to it and its
+tint fades a little (von Kries), so a torch-lit wall reads warm white rather than orange while the
+dim edge of the pool keeps its colour:
+
+```
+Le       = lerp(decode(saturate(amb + dif * saturate(towardsLight.z))), 0.1, roomW)
+r        = luma(diffuse) / max(Le, 0.02)
+a        = strength * r / (1 + r)                                              (default 0.4)
+diffuse  = lerp(diffuse, luma(diffuse), a),  and the same for the specular
+```
+
+`amb` and `dif` are the lumas of the engine's ambient and diffuse (gamma); inside rooms, where the
+engine lights with its own interior light, a fixed level stands in.
+
+**Fog dimming.** The fog probes its extinction at the eye (seven samples, the eye and a yard either
+side of it), read back a few frames late. Used as it came, a third-person orbit carried the eye
+through thicker and thinner patches and every lamp pulsed with it. The extinction the lamps see is
+eased once a frame towards the probe (an exponential with a 1 s time constant, frame-rate
+independent) and capped at 0.03 per yard, a haze that still leaves three quarters of a lamp at
+10 yd: the probe is not taken between the lamp and what it lights, and the fog already dims the way
+to the eye. The surfaces and the field read the same value (`FogExtinction` in
+`src/core/Extension.hpp`), times their own share.
 
 It writes one RGBA16F image: rgb the added radiance (albedo times diffuse, plus specular and
 emission), a the sun and moon factor (section 7). A copy goes to a D3D9 texture for the composite.
@@ -253,6 +306,7 @@ The debug views are drawn here too.
 - Every light in the cluster's list is evaluated fully: no seams.
 - Cookies are prefiltered by footprint.
 - The list order is by id, and every change fades.
+- The fog's dimming follows the fog, not the camera: it is eased over about a second.
 
 ## 7. Sun, moon and sky
 
@@ -346,17 +400,22 @@ march already has it.
 
 **What is in a froxel.** For each light of the froxel's cluster:
 - the analytic integral of `I / (h^2 + t^2)` along the froxel's depth span (closed form, `atan`),
-  averaged over the span;
-- window, cone, profile and hot core, at the closest point of the span to the light;
+  averaged over the span. `h^2` is the ray's closest approach to the light squared, plus its soft
+  core squared, plus a quarter of the froxel's width squared: a column is evaluated along its centre
+  ray only, and a core narrower than the column (a tenth of a yard against up to half a yard at a
+  distance) made a lamp's halo peak swing two to four times over as it slid between columns;
+- window, cone, profile and hot core (within three glow radii of the source, section 6), at the
+  closest point of the span to the light;
 - the cookie, prefiltered by the froxel's footprint seen from the lamp;
 - the room gate (section 9);
 - the shadow service's point lookup (`shadow.hlsli`), when it is loaded;
 - a thinning by the medium between the lamp and the froxel, `exp(-extinction * d)`, with the fog's
-  camera density. This stands in until the fog provides its own transmittance.
+  camera density eased over about a second and capped at 0.03 per yard (section 6). This stands in
+  until the fog provides its own transmittance.
 
-The depth integral makes the field smooth along depth whatever the froxel size, so a lamp's core
-never flickers as the grid slides. There is no temporal history in the field; the fog's march keeps
-its own.
+The depth integral makes the field smooth along depth whatever the froxel size, and the core widened
+to the froxel's width does the same across it, so a lamp's core never flickers as the grid slides.
+There is no temporal history in the field; the fog's march keeps its own.
 
 **Without the fog.** When the fog is not active, the composite adds a small analytic halo. The
 field's `inscatter` is integrated front to back into a fourth image (internal) with a constant thin
