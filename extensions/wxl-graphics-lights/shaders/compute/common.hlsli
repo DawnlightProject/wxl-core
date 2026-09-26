@@ -90,16 +90,18 @@ float MaterialGloss(float v) { return (v - 64.0 * floor(v / 64.0)) / 63.0; }
 float3 DecodeGamma(float3 c) { return pow(max(c, 0.0), 2.2); }
 
 // --- rooms (wxl-graphics-lights' Rooms.cpp: 3 rows per box, padded by 0.3 yd) -----------------------------
+//
+// A point's rooms are soft, never a flip at a box face: a WMO group's box is only an approximation of the
+// room (it cuts through doorways, open halls, the ground around a hut), so a hard in-or-out test drew its
+// straight edges and rectangles on the floor. Each room gets a membership 0..1:
+//   - horizontally, it ramps up across the box's padding, so a point at the group's own bounds is fully
+//     in and the membership eases to nothing over the 0.3 yd outside them;
+//   - vertically, floors and ceilings stay sharp (they are real surfaces, never seen as a line);
+//   - a surface near a box face and facing out of the box is the outside of that wall: it is not in it;
+//   - the room's own fade (joining or leaving the working set) scales it.
 
-float InRoom(float3 r, int b)
-{
-    float4 x = rooms[b * 3], y = rooms[b * 3 + 1], z = rooms[b * 3 + 2];
-    float4 p = float4(r, 1.0);
-    if (abs(dot(p, x)) > 1.0 || abs(dot(p, y)) > 1.0 || z.z == 0.0) return 0.0;
-    float base = r.x * z.x + r.y * z.y + z.w;
-    float a = (-1.0 - base) / z.z, c = (1.0 - base) / z.z;
-    return r.z >= min(a, c) + 0.2 && r.z <= max(a, c) - 0.2 ? 1.0 : 0.0;
-}
+static const float kRoomPad  = 0.3;    // Rooms.hpp kPad
+static const float kRoomWall = 0.8;    // yards inside a padded face where an outward-facing surface is a wall's outside
 
 float RoomWeight(float b)
 {
@@ -110,16 +112,58 @@ float RoomWeight(float b)
     return k == 0 ? row.x : (k == 1 ? row.y : (k == 2 ? row.z : row.w));
 }
 
-// The smallest room holding a camera-relative point among those not faded out; -1 none.
-float RoomAt(float3 r)
+// How much a camera-relative point belongs to room b; n its surface normal, or zero for a point in the air.
+float RoomMembership(float3 r, float3 n, int b)
 {
-    int count = int(roomInfo.x + 0.5);
-    [loop] for (int b = 0; b < LIGHTS_MAX_ROOMS; ++b)
+    float4 x = rooms[b * 3], y = rooms[b * 3 + 1], z = rooms[b * 3 + 2];
+    float4 p = float4(r, 1.0);
+    float qx = dot(p, x), qy = dot(p, y);
+    if (abs(qx) >= 1.0 || abs(qy) >= 1.0 || z.z == 0.0) return 0.0;
+    float base = r.x * z.x + r.y * z.y + z.w;
+    float a = (-1.0 - base) / z.z, c = (1.0 - base) / z.z;
+    if (r.z < min(a, c) + 0.2 || r.z > max(a, c) - 0.2) return 0.0;
+    // Yards inside the padded box along its two horizontal axes (each row's length is 1 / its half size).
+    float lx = max(length(x.xyz), 1e-6), ly = max(length(y.xyz), 1e-6);
+    float dx = (1.0 - abs(qx)) / lx, dy = (1.0 - abs(qy)) / ly;
+    float m = saturate(min(dx, dy) / kRoomPad);
+    if (dot(n, n) > 0.5)
     {
-        if (b >= count) break;
-        if (RoomWeight(float(b)) > 0.0 && InRoom(r, b) > 0.5) return float(b);
+        float outX = dx < kRoomWall ? saturate((dot(n, x.xyz / lx) * sign(qx) - 0.35) / 0.3) : 0.0;
+        float outY = dy < kRoomWall ? saturate((dot(n, y.xyz / ly) * sign(qy) - 0.35) / 0.3) : 0.0;
+        m *= 1.0 - max(outX, outY);
     }
-    return -1.0;
+    return m * RoomWeight(float(b));
+}
+
+struct RoomSet
+{
+    float m[LIGHTS_MAX_ROOMS];   // each room's membership
+    float indoor;                // the largest: how much the point is inside any room
+    float main;                  // the room holding it most (-1 none), for the debug view
+};
+
+RoomSet RoomsAt(float3 r, float3 n, bool never)
+{
+    RoomSet s;
+    s.indoor = 0.0;
+    s.main = -1.0;
+    int count = int(roomInfo.x + 0.5);
+    [unroll] for (int b = 0; b < LIGHTS_MAX_ROOMS; ++b)
+    {
+        float m = (never || b >= count) ? 0.0 : RoomMembership(r, n, b);
+        s.m[b] = m;
+        if (m > s.indoor) { s.indoor = m; s.main = float(b); }
+    }
+    return s;
+}
+
+// The largest membership among the rooms of a mask (bit b: room b).
+float RoomsIn(RoomSet s, uint mask)
+{
+    float best = 0.0;
+    [unroll] for (int b = 0; b < LIGHTS_MAX_ROOMS; ++b)
+        if ((mask >> uint(b)) & 1u) best = max(best, s.m[b]);
+    return best;
 }
 
 // A light's shadow slot this frame (-1 none), from the per-list-index table.

@@ -66,9 +66,12 @@ namespace wxl::gfx::lights::rooms
      * @brief The smallest room holding a camera-relative point and its height range there.
      * @param r      the point, relative to the camera.
      * @param lo,hi  receive the room's unpadded floor and ceiling heights at r, camera-relative.
+     * @param inset  yards the point must lie inside a box horizontally, from its padded faces: 0 takes
+     *               the padding as part of the room (a wall's surface tests inside), kPad asks for the
+     *               group's own bounds (a lamp just outside a wall is not in the room behind it).
      * @return the room's index, or -1 outside every room.
      */
-    int RoomOf(const float r[3], float& lo, float& hi);
+    int RoomOf(const float r[3], float& lo, float& hi, float inset = 0.0f);
 
     /// Room b's unpadded floor and ceiling at the camera-relative point r, wherever r lies; false
     /// for a box that does not stand upright.

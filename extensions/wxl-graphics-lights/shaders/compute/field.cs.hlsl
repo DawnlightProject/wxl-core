@@ -67,8 +67,7 @@ void main(uint3 id : SV_DispatchThreadID)
     // The froxel's size across, for the cookies' prefilter: the larger of its depth span and its width.
     float across = max(span, 0.5 * (d0 + d1) * proj.z * screen.y / fieldC.y);
 
-    float room = RoomAt(centre);
-    float roomW = RoomWeight(room);
+    RoomSet rs = RoomsAt(centre, float3(0.0, 0.0, 0.0), false);
 
     float3 cell = floor(float3(id) / float3(fieldC.x / clusterC.x, fieldC.y / clusterC.y, fieldC.z / clusterC.z));
     float2 list = LightListAt(cell);
@@ -100,7 +99,7 @@ void main(uint3 id : SV_DispatchThreadID)
         if (falloff <= 0.0) continue;
         float footprint = across / max(dl, 0.05);
         float3 shape = LightShape(i, s, l, footprint);
-        float gate = LightRoomGate(s, room, roomW);
+        float gate = LightRoomGate(s, rs);
         float vis = PointShadow(i, q);
         float3 rgb = LightHot(s.intensity, dl, s.softRadius, s.hot) * (falloff * gate * vis * LightMedium(dl)) * shape;
         float lum = Luma(rgb);

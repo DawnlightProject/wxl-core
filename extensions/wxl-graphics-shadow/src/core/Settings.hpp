@@ -109,7 +109,7 @@ namespace wxl::gfx::shadow
         float contactSun = 1.5f;     // yards marched towards the sun or the moon
         int   contactSlots = 4;      // the most important slots that get one
         float contactLamp = 1.0f;    // yards marched towards a lamp at most
-        float contactThickness = 0.6f; // yards behind the depth buffer a sample may occlude
+        float contactThickness = 0.35f; // yards behind the depth buffer a sample may occlude
         float contactStrength = 1.0f;
 
         // Masks.

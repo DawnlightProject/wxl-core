@@ -133,7 +133,9 @@ float4 CookieRow(float index, float row)
 
 float3 QuatRotate(float4 q, float3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v); }
 
-float2 CookieUv(float3 d, float2 cell)
+// The atlas coordinates of direction d in a cookie whose cells start at cell, moved by `nudge` texels
+// of the face (the taps of the magnification filter) and kept inside the face.
+float2 CookieUv(float3 d, float2 cell, float2 nudge)
 {
     float3 a = abs(d);
     float3 m = a.x >= a.y && a.x >= a.z ? float3(1.0, 0.0, 0.0) : (a.y >= a.z ? float3(0.0, 1.0, 0.0) : float3(0.0, 0.0, 1.0));
@@ -141,7 +143,7 @@ float2 CookieUv(float3 d, float2 cell)
     float f = dot(m, float3(0.0, 2.0, 4.0)) + (sgn > 0.0 ? 0.0 : 1.0);
     float sc = m.x * (-sgn * d.z) + m.y * d.x + m.z * (sgn * d.x);
     float tc = m.y * (sgn * d.z) - (1.0 - m.y) * d.y;
-    float2 uv = float2(sc, tc) / max(dot(a, m), 1e-5) * 0.5 + 0.5;
+    float2 uv = float2(sc, tc) / max(dot(a, m), 1e-5) * 0.5 + 0.5 + nudge / max(cookieE.y, 1.0);
     float2 inset = cookieD.xy / cookieC.xy;
     uv = clamp(uv, inset, 1.0 - inset);
     float2 faceOrigin = float2(fmod(f, 4.0), floor(f * 0.25));
@@ -172,7 +174,16 @@ float3 LightCookie(uint index, float3 fromLight, float footprint, out float has)
         float4 q = CookieRow(float(index), 0.0);
         float3 local = QuatRotate(normalize(q), fromLight);
         float2 origin = float2(fmod(cell, kCookiesAcross) * 4.0 * cookieC.x, floor(cell / kCookiesAcross) * 2.0 * cookieC.y);
-        float3 s = cookieAtlas.SampleLevel(sLinearClamp, CookieUv(local, origin), 0).rgb;
+        // Four bilinear taps three quarters of a texel apart, a tent about two texels wide: a baked cage is
+        // coarse, and a wall right beside the lamp magnifies it until one bilinear fetch shows its texels
+        // as a staircase. The source's own size would soften it this much and more.
+        float3 s = 0.0;
+        [unroll] for (int k = 0; k < 4; ++k)
+        {
+            float2 nudge = float2((k & 1) != 0 ? 0.75 : -0.75, (k & 2) != 0 ? 0.75 : -0.75);
+            s += cookieAtlas.SampleLevel(sLinearClamp, CookieUv(local, origin, nudge), 0).rgb;
+        }
+        s *= 0.25;
         if (lights.y > 0.5) s = s.rrr;   // a single-channel atlas reads (L, 0, 0) through Vulkan
         float3 pattern = lerp(dot(s, float3(0.299, 0.587, 0.114)).xxx, s, cookieE.x);
         t = lerp(t, pattern, (faded / 255.0) * sharp);
@@ -194,24 +205,19 @@ float3 LightShape(uint index, WxlLightSource s, float3 fromLight, float footprin
 
 // --- rooms ------------------------------------------------------------------------------------------------
 
-// How much of a light reaches a point in room `room` (-1 outside every room) of weight roomW. Two models,
-// blended by the light's own gate (which already carries its room's fade), so nothing ever flips:
-//   outdoor light: full outdoors, the outdoor-indoors leak inside a room (by the room's weight);
-//   room light:    its mask's rooms fully, other floors by the floor leak, outdoors the indoor-outdoors
-//                  leak (towards which a fading room eases).
-float LightRoomGate(WxlLightSource s, float room, float roomW)
+// How much of a light reaches a point of these rooms. Two models, blended by the light's own gate (which
+// already carries its room's fade), so nothing ever flips:
+//   outdoor light: full outdoors, the outdoor-indoors leak inside a room (by how indoor the point is);
+//   room light:    full in any room of its mask, other rooms by the floor leak, outdoors the
+//                  indoor-outdoors leak.
+// Every term is continuous in the point's memberships, so a box face never shows as a line.
+float LightRoomGate(WxlLightSource s, RoomSet rs)
 {
     if (Isolated(LIGHTS_ISO_NO_ROOMS)) return 1.0;
-    bool pointIn = room > -0.5 && roomW > 0.0;
-    float outdoor = pointIn ? lerp(1.0, roomInfo.z, roomW) : 1.0;
+    float outdoor = lerp(1.0, roomInfo.z, rs.indoor);
     if (s.room < -0.5 || s.roomGate <= 0.0) return outdoor;
-    float indoor = roomInfo.w;
-    if (pointIn)
-    {
-        uint mask = uint(s.roomMask + 0.5);
-        float test = ((mask >> uint(room + 0.5)) & 1u) != 0u ? 1.0 : roomInfo.y;
-        indoor = lerp(roomInfo.w, test, roomW);
-    }
+    float own = RoomsIn(rs, uint(s.roomMask + 0.5));
+    float indoor = lerp(lerp(roomInfo.w, roomInfo.y, rs.indoor), 1.0, own);
     return lerp(outdoor, indoor, saturate(s.roomGate));
 }
 

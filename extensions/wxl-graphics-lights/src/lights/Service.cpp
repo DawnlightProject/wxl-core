@@ -192,7 +192,9 @@ namespace
         namespace rooms = gl::rooms;
         const float r[3] = { l.rest[0] - eye[0], l.rest[1] - eye[1], l.rest[2] - eye[2] };
         float lo = 0.0f, hi = 0.0f;
-        const int now = rooms::RoomOf(r, lo, hi);
+        // Within the group's own bounds, not its padding: a lantern standing just outside a wall
+        // is an outdoor light, not a light of the room behind the wall.
+        const int now = rooms::RoomOf(r, lo, hi, rooms::kPad);
         const void* owner = nullptr;
         uint32_t group = 0;
         if (now >= 0) rooms::Identity(now, owner, group);

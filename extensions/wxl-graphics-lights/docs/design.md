@@ -395,6 +395,23 @@ Added: a light's gate changes smoothly.
   a pixel's gate ever flips.
 - Outdoor light reaching into a room and room light reaching outdoors keep their leak factors.
 
+Where a point is (surfaces and froxels): soft, never a flip at a box face. A group's box only
+approximates its room: it cuts through doorways and open halls, and reaches over the ground around a
+hut. A hard in-or-out test drew those faces as straight edges and rectangles on floors and grass.
+- **Membership per room**, 0..1: it ramps up across the box's 0.3 yd padding, so a point at the
+  group's own bounds is fully in and the membership eases to nothing just outside them. Floors and
+  ceilings stay sharp: they are real surfaces.
+- **A wall's outside.** A surface within 0.8 yd of a box face and facing out of the box is the outside
+  of that wall, not the room.
+- **Terrain is never in a room.** The ground is not drawn indoors.
+- **Scaled by the room's own fade.** A room joining or leaving the working set eases every point.
+- **Any room of the light's mask.** A room light is full in whichever of its rooms holds the point
+  most, not only in the smallest box around it. The two models above take these memberships in place
+  of a single room.
+
+Where a light is: within its group's own bounds, not the padding. A lantern standing just outside a
+wall is an outdoor light, not a light of the room behind the wall.
+
 ## 10. UI and settings
 
 The panel "Graphics Lights" has these tabs:

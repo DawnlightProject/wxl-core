@@ -298,7 +298,7 @@ namespace
         Set(p.r[SH_ROW_CONTACT], s.contactSun, s.contactLamp, s.contactThickness, contact ? s.contactStrength : 0.0f);
         const su::Bodies& bodies = su::Current();
         const int body = !s.sun ? -1 : (bodies.night ? (s.moon && bodies.moonWeight > 0.01f ? 1 : -1) : (bodies.sunWeight > 0.01f ? 0 : -1));
-        Set(p.r[SH_ROW_CONTACT2], 10.0f, 8.0f, float(body), 60.0f);
+        Set(p.r[SH_ROW_CONTACT2], 32.0f, 16.0f, float(body), 60.0f);   // most steps: the march takes one every 1.5 pixels
         float cs[4] = { -1.0f, -1.0f, -1.0f, -1.0f };
         int n = 0;
         const sl::Slot* slots = sl::List();

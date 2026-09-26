@@ -23,14 +23,17 @@
 [[vk::binding(SH_B_OUT0, 0)]] [[vk::image_format("rgba8")]] RWTexture3D<float4> outMask;
 [[vk::binding(SH_B_OUT1, 0)]] [[vk::image_format("r32f")]] RWTexture2D<float> outDepth;
 
-// A short march from p towards `to` (camera-relative) through the depth buffer. Fixed, quadratically
-// spaced steps, no jitter. A sample occludes when the scene lies in front of the ray point by more than
-// a small bias and less than the thickness, and not on the receiver's own plane (which is what removes
-// self-intersection stripes on grazing surfaces). Returns 1 lit.
-float Contact(float3 p, float3 n, float3 to, int steps)
+// A short march from p towards `to` (camera-relative) through the depth buffer. No jitter: the samples
+// are spaced evenly along the ray's image on screen, about one every 1.5 pixels (at least 4, at most
+// maxSteps), so a thin occluder -- a leg, a post, a blade of grass -- is never stepped over by some
+// receivers and hit by their neighbours, which is what drew combs of copies of it. A sample occludes
+// when the scene lies in front of the ray point by more than a small bias and less than the thickness,
+// and not on the receiver's own plane (which is what removes self-intersection stripes on grazing
+// surfaces). Returns 1 lit.
+float Contact(float3 p, float3 n, float3 to, int maxSteps)
 {
     float4 C = P[SH_ROW_CONTACT];
-    if (C.w <= 0.0 || steps <= 0) return 1.0;
+    if (C.w <= 0.0 || maxSteps <= 0) return 1.0;
     float3 ray = to - p;
     float len = length(ray);
     if (len < 0.01) return 1.0;
@@ -39,35 +42,48 @@ float Contact(float3 p, float3 n, float3 to, int steps)
     if (dot(n, dir) <= 0.02) return 1.0;
     float dist = length(p);
     float3 start = p + n * (0.015 + 0.0015 * dist);
+    float4 c0 = ShClip(start);
+    float4 c1 = ShClip(start + ray);
+    if (c0.w <= 0.05) return 1.0;
+    // A ray running towards the camera stops at the near plane.
+    float reach = 1.0;
+    if (c1.w < 0.05)
+    {
+        reach = (c0.w - 0.05) / max(c0.w - c1.w, 1e-6);
+        c1 = lerp(c0, c1, reach);
+    }
     float2 size = P[SH_ROW_SCREEN].xy;
-    float thickness = P[SH_ROW_CONTACT].z;
+    float2 uv0 = ShClipToUv(c0), uv1 = ShClipToUv(c1);
+    float pixels = length((uv1 - uv0) * size);
+    int steps = clamp(int(ceil(pixels / 1.5)), 4, maxSteps);
+    float iw0 = 1.0 / c0.w, iw1 = 1.0 / c1.w;
+    float thickness = C.z;
     float occ = 0.0;
     [loop] for (int i = 1; i <= steps; ++i)
     {
-        float t = float(i) / float(steps);
-        t *= t;
-        float3 q = start + ray * t;
-        float4 clip = ShClip(q);
-        if (clip.w <= 0.05) break;
-        float2 uv = ShClipToUv(clip);
+        // Even on screen; the ray point's view depth follows perspective (1 / w is linear on screen).
+        float s = float(i) / float(steps);
+        float2 uv = lerp(uv0, uv1, s);
         if (any(uv <= 0.0) || any(uv >= 1.0)) break;
+        float w = 1.0 / lerp(iw0, iw1, s);
+        float t = s * iw1 * w * reach;   // the share of the ray walked, in yards over its length
         int2 px = int2(uv * size);
         float d = depthTex.Load(int3(px, 0));
         if (ShIsSky(d)) continue;
         float ndc = ShNdc(d);
         float zs = ShLinear(ndc);
-        float delta = clip.w - zs;
+        float delta = w - zs;
         // The receiver's own surface, seen again further along: never an occluder.
         float3 ps = ShRel((float2(px) + 0.5) / size, ndc);
         float tolerance = 0.03 + 0.004 * zs;
         if (abs(dot(ps - p, n)) < tolerance) continue;
-        float bias = 0.01 + 0.0015 * clip.w;
-        float o = saturate((delta - bias) / (0.04 + 0.006 * clip.w)) * saturate((thickness - delta) / (0.3 * thickness));
+        float bias = 0.01 + 0.0015 * w;
+        float o = saturate((delta - bias) / (0.04 + 0.006 * w)) * saturate((thickness - delta) / (0.3 * thickness));
         occ = max(occ, o * (1.0 - 0.5 * t));
     }
     // Fades out in the distance and near the screen's edges.
-    float2 uv0 = ShClipToUv(ShClip(p));
-    float edge = saturate(min(min(uv0.x, 1.0 - uv0.x), min(uv0.y, 1.0 - uv0.y)) * 20.0);
+    float2 uvp = ShClipToUv(ShClip(p));
+    float edge = saturate(min(min(uvp.x, 1.0 - uvp.x), min(uvp.y, 1.0 - uvp.y)) * 20.0);
     float far = 1.0 - smoothstep(P[SH_ROW_CONTACT2].w * 0.6, P[SH_ROW_CONTACT2].w, dist);
     return 1.0 - occ * C.w * edge * far;
 }
