@@ -120,7 +120,8 @@ float WxlShadowCapsule(float3 p, float3 L, float3 a, float3 b, float radius, flo
 }
 
 // Every capsule in `mask` between p and a light at L (camera-relative), except `skip`. A receiver inside
-// a capsule (plus the self margin) is never shadowed by it: a body does not darken itself.
+// a capsule (plus the self margin) is never shadowed by it: a body does not darken itself. Each capsule's
+// occlusion is scaled by its weight, which fades in and out as its unit joins or leaves the list.
 float ShadowBodies(float3 p, float3 L, float size, uint mask, int skip)
 {
     if (!ShadowEnabled()) return 1.0;
@@ -135,10 +136,11 @@ float ShadowBodies(float3 p, float3 L, float size, uint mask, int skip)
         mask &= mask - 1u;
         float4 A = wxlShadow[WXL_SHADOW_ROW_CAPSULES + k * 2u];
         float4 B = wxlShadow[WXL_SHADOW_ROW_CAPSULES + k * 2u + 1u];
+        if (B.w <= 0.0) continue;
         float3 ab = B.xyz - A.xyz;
         float s = saturate(dot(p - A.xyz, ab) / max(dot(ab, ab), 1e-6));
         if (length(p - (A.xyz + ab * s)) < A.w + info.z) continue;
-        vis *= WxlShadowCapsule(p, L, A.xyz, B.xyz, A.w, size);
+        vis *= lerp(1.0, WxlShadowCapsule(p, L, A.xyz, B.xyz, A.w, size), saturate(B.w));
         if (vis < 0.004) break;
     }
     return vis;

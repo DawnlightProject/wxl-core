@@ -21,7 +21,8 @@ WXL_GFX_SHADOW_MAPS_MOVING_FACE=512
 WXL_GFX_SHADOW_MAPS_REFRESH=2
 # Face size of the filtered atlas: 256 (64 MB) or 128 (16 MB).
 WXL_GFX_SHADOW_MAPS_ATLAS_FACE=256
-# Yards around a lamp whose casters (its own cage, post, bracket) cast nothing.
+# Yards around a lamp whose casters (its own cage, post, bracket) cast nothing, in its map and in its contact
+# shadow.
 WXL_GFX_SHADOW_MAPS_HOUSING=0.45
 # The same for a carried light: the torch and the hand holding it.
 WXL_GFX_SHADOW_MAPS_CARRIED_HOUSING=0.3
@@ -40,15 +41,19 @@ WXL_GFX_SHADOW_NORMAL_OFFSET=1.5
 WXL_GFX_SHADOW_SLOPE_BIAS=1.0
 
 # --- Slots ------------------------------------------------------------------------------------------------
-# 16 lights cast at once. A light keeps its slot at least HOLD seconds; slots and maps fade over FADE
-# seconds; a newcomer must be MARGIN times more important than a holder to take its place.
+# 16 lights cast at once, ranked by brightness over distance to the player (not to the orbiting camera).
+# A light keeps its slot at least SLOT_HOLD seconds and its map at least MAPS_HOLD seconds; slots, maps and
+# contact shadows fade over FADE seconds; a newcomer must be MARGIN times more important than a holder to
+# take its slot, its map or its contact shadow.
 WXL_GFX_SHADOW_SLOT_HOLD=1.0
+WXL_GFX_SHADOW_MAPS_HOLD=1.0
 WXL_GFX_SHADOW_SLOT_FADE=0.5
 WXL_GFX_SHADOW_SLOT_MARGIN=1.25
 
 # --- Body capsules (lamps without a map) ----------------------------------------------------------------
 WXL_GFX_SHADOW_CAPSULES=1
-# Bodies this near the camera (the 32 nearest), radius per yard of height, penumbra scale.
+# Bodies this near the player (the 32 nearest it; the camera without a player), radius per yard of height,
+# penumbra scale. A listed body stays listed unless a newcomer is clearly nearer, and fades in and out.
 WXL_GFX_SHADOW_CAPSULES_RANGE=60
 WXL_GFX_SHADOW_CAPSULES_RADIUS=0.2
 WXL_GFX_SHADOW_CAPSULES_PENUMBRA=1.0
@@ -87,7 +92,8 @@ WXL_GFX_SHADOW_HORIZON_OCCLUDER=120
 
 # --- Contact shadows --------------------------------------------------------------------------------------
 WXL_GFX_SHADOW_CONTACT=1
-# Yards towards the sun or the moon; lamps that get one (0..4); yards towards a lamp at most.
+# Yards towards the sun or the moon; lamps that get one (0..4, kept against the slot margin, fading in and
+# out); yards towards a lamp at most (its own housing blocks nothing).
 WXL_GFX_SHADOW_CONTACT_SUN=1.5
 WXL_GFX_SHADOW_CONTACT_SLOTS=4
 WXL_GFX_SHADOW_CONTACT_LAMP=1.0

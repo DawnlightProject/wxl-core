@@ -56,9 +56,24 @@ namespace
     };
     std::vector<Candidate> g_candidates;
 
-    // Motion per light id: where it was, and when it last moved.
-    struct Motion { float pos[3]; double movedAt; double seenAt; };
+    // Motion per light id: where it rests (or last moved to), where it was last frame, for how many
+    // frames in a row it has moved, whether it counts as moving and when it last moved.
+    struct Motion
+    {
+        float  anchor[3];
+        float  last[3];
+        int    streak;
+        bool   moving;
+        double movedAt;
+        double seenAt;
+    };
     std::unordered_map<uint32_t, Motion> g_motion;
+
+    constexpr float  kMoveJump = 0.5f;     // yards: one displacement this large makes a light moving at once
+    constexpr float  kMoveDrift = 0.1f;    // yards: a smaller one counts only after motion on several frames in a row
+    constexpr float  kMoveStep = 0.002f;   // yards in one frame that count as a frame of motion
+    constexpr int    kMoveFrames = 4;      // frames of motion in a row that make a drift count
+    constexpr double kMoveSettle = 2.0;    // seconds without motion before a moving light is still again
 
     int  g_changes = 0;                      // slot hand-overs since start
     int  g_mapChanges = 0;
@@ -70,18 +85,34 @@ namespace
         return dx * dx + dy * dy + dz * dz;
     }
 
+    /// Moves a ranking by brightness over distance from the eye onto the focus (the player). The camera
+    /// orbits the player in third person, so a ranking from the eye changed whenever the view turned,
+    /// and slots, maps and contact shadows changed hands with it. wxl-graphics-lights hands its lights in
+    /// ranked as luma / (1 + d^2 / max(r^2, 1)) with d from the eye: this swaps that distance term for
+    /// the focus's. Without a player the focus is the eye and the factor is 1.
+    float Recentre(const WXL_GfxShadowLight& l, const float eye[3], const float focus[3])
+    {
+        const float r2 = std::max(l.radius * l.radius, 1.0f);
+        return (1.0f + Dist2(l.position, eye) / r2) / (1.0f + Dist2(l.position, focus) / r2);
+    }
+
     /// The lights of this frame: handed in when a call came within two frames, else read from
-    /// wxl-graphics-lights and ranked by brightness over distance.
+    /// wxl-graphics-lights and ranked by brightness over distance. Either way the ranking is taken
+    /// from the player (the eye without one).
     void Gather(const float eye[3])
     {
         g_candidates.clear();
         g_pulled = false;
         const sh::Settings& s = sh::Config();
+        const float* focus = bd::Focus();
         if (g_everPushed && g_frame - g_pushFrame <= 2)
         {
-            for (const WXL_GfxShadowLight& l : g_pushed)
+            for (WXL_GfxShadowLight l : g_pushed)
                 if (l.id && !(l.flags & WXL_GFX_SHADOW_LIGHT_NEVER) && l.radius > 0.5f)
-                    g_candidates.push_back({ l, std::max(l.importance, 0.0f) });
+                {
+                    l.importance = std::max(l.importance, 0.0f) * Recentre(l, eye, focus);
+                    g_candidates.push_back({ l, l.importance });
+                }
         }
         else if (const WXL_GraphicsLightsApi* lights = sh::Lights())
         {
@@ -103,31 +134,60 @@ namespace
                 l.flags = g.carried ? WXL_GFX_SHADOW_LIGHT_CARRIED : 0u;
                 l.listIndex = i;
                 const float luma = (g.color[0] * 0.299f + g.color[1] * 0.587f + g.color[2] * 0.114f) * g.intensity;
-                l.importance = luma / (1.0f + Dist2(l.position, eye) / (l.radius * l.radius)) * (g.carried ? 2.0f : 1.0f);
+                l.importance = luma / (1.0f + Dist2(l.position, focus) / (l.radius * l.radius)) * (g.carried ? 2.0f : 1.0f);
                 g_candidates.push_back({ l, l.importance });
             }
         }
         (void)s;
     }
 
-    /// Whether a light moves: carried, or displaced by more than 0.1 yd within the last two seconds.
+    /// Whether a light moves: carried, or displaced from where it rests by more than kMoveJump at once,
+    /// or by more than kMoveDrift through motion on kMoveFrames frames in a row. A switch between still
+    /// and moving drops the light's map and builds the other kind, so a single small jump (a light put
+    /// back a few centimetres away) must not count. A moving light is still again after kMoveSettle
+    /// seconds without moving more than kMoveDrift.
     bool Moving(const WXL_GfxShadowLight& l, double now)
     {
         if (l.flags & WXL_GFX_SHADOW_LIGHT_CARRIED) return true;
         auto it = g_motion.find(l.id);
         if (it == g_motion.end())
         {
-            g_motion[l.id] = Motion{ { l.position[0], l.position[1], l.position[2] }, -1e9, now };
+            Motion m{};
+            std::memcpy(m.anchor, l.position, sizeof m.anchor);
+            std::memcpy(m.last, l.position, sizeof m.last);
+            m.movedAt = -1e9;
+            m.seenAt = now;
+            g_motion[l.id] = m;
             return false;
         }
         Motion& m = it->second;
         m.seenAt = now;
-        if (Dist2(m.pos, l.position) > 0.1f * 0.1f)
+        m.streak = Dist2(m.last, l.position) > kMoveStep * kMoveStep ? m.streak + 1 : 0;
+        std::memcpy(m.last, l.position, sizeof m.last);
+        const float d2 = Dist2(m.anchor, l.position);
+        const bool displaced = d2 > kMoveDrift * kMoveDrift;
+        if (!m.moving)
         {
-            std::memcpy(m.pos, l.position, sizeof m.pos);
-            m.movedAt = now;
+            if (d2 > kMoveJump * kMoveJump || (displaced && m.streak >= kMoveFrames))
+            {
+                m.moving = true;
+                m.movedAt = now;
+                std::memcpy(m.anchor, l.position, sizeof m.anchor);
+            }
         }
-        return now - m.movedAt < 2.0;
+        else if (displaced)
+        {
+            m.movedAt = now;
+            std::memcpy(m.anchor, l.position, sizeof m.anchor);
+        }
+        else if (now - m.movedAt >= kMoveSettle)
+        {
+            // It rests here now.
+            m.moving = false;
+            m.streak = 0;
+            std::memcpy(m.anchor, l.position, sizeof m.anchor);
+        }
+        return m.moving;
     }
 
     /// The carrying unit's capsule: by GUID when handed in, else the nearest capsule to a carried light.
@@ -241,8 +301,10 @@ namespace
         const sh::Settings& s = sh::Config();
         const float step = std::min(dt / std::max(s.slotFade, 0.05f), 1.0f);
         const bool on = s.maps && g_claimed && !sh::Isolated(sh::kIsoNoMaps);
-        // Who deserves a map: the best still and the best moving slots, holders favoured.
-        struct Want { int slot; float rank; };
+        // Who deserves a map: the best still and the best moving slots, holders favoured. A map younger
+        // than the hold cannot be beaten, like a slot, so two lamps of like importance cannot pass a map
+        // back and forth quicker than that.
+        struct Want { int slot; float rank; bool held; };
         Want still[sl::kSlots], moving[sl::kSlots];
         int nStill = 0, nMoving = 0;
         for (int i = 0; i < sl::kSlots && on; ++i)
@@ -253,10 +315,12 @@ namespace
             float rank = std::max(slot.light.importance, 1e-6f);
             // The player's own carried light first of all.
             if (slot.carrier >= 0 && bd::List()[slot.carrier].player) rank *= 100.0f;
-            if (slot.map >= 0 && !slot.mapLeaving) rank *= s.slotMargin;
-            (slot.moving ? moving[nMoving++] : still[nStill++]) = Want{ i, rank };
+            const bool holder = slot.map >= 0 && !slot.mapLeaving;
+            if (holder) rank *= s.slotMargin;
+            const bool held = holder && now - g_maps[slot.map].since < s.mapHold;
+            (slot.moving ? moving[nMoving++] : still[nStill++]) = Want{ i, rank, held };
         }
-        auto byRank = [](const Want& a, const Want& b) { return a.rank > b.rank; };
+        auto byRank = [](const Want& a, const Want& b) { return a.held != b.held ? a.held : a.rank > b.rank; };
         std::sort(still, still + nStill, byRank);
         std::sort(moving, moving + nMoving, byRank);
         bool chosen[sl::kSlots] = {};
@@ -291,6 +355,7 @@ namespace
             sl::Map& map = g_maps[m];
             map = sl::Map{};
             map.lightId = slot.id;
+            map.since = now;
             map.kind = kind;
             map.idMain = slot.id;
             map.idUnits = (slot.id * 2654435761u) | 1u;
@@ -440,17 +505,30 @@ namespace wxl::gfx::shadow::slots
         {
             slot.carrier = slot.id ? Carrier(slot.light) : -1;
             slot.capsuleMask = slot.id && capsules ? bd::Mask(slot.light.position, slot.light.radius) : 0u;
-            slot.contact = false;
         }
         UpdateMaps(now, dt);
         DriveCore();
-        // Contact shadows for the most important slots.
-        int order[kSlots];
+        // Contact shadows for the most important slots. A holder keeps its contact shadow unless another
+        // beats it by the slot margin, and each fades in and out, so they no longer jump between lamps
+        // of like importance from one frame to the next.
+        struct Rank { int slot; float rank; };
+        Rank order[kSlots];
         int n = 0;
         for (int i = 0; i < kSlots; ++i)
-            if (g_slots[i].id && g_slots[i].weight > 0.0f) order[n++] = i;
-        std::sort(order, order + n, [](int a, int b) { return g_slots[a].light.importance > g_slots[b].light.importance; });
-        for (int k = 0; k < std::min(n, s.contactSlots); ++k) g_slots[order[k]].contact = true;
+        {
+            const Slot& slot = g_slots[i];
+            if (!slot.id || slot.leaving || slot.weight <= 0.0f) continue;
+            order[n++] = Rank{ i, std::max(slot.light.importance, 0.0f) * (slot.contact ? s.slotMargin : 1.0f) };
+        }
+        std::sort(order, order + n, [](const Rank& a, const Rank& b) { return a.rank > b.rank; });
+        for (Slot& slot : g_slots) slot.contact = false;
+        for (int k = 0; k < std::min(n, s.contactSlots); ++k) g_slots[order[k].slot].contact = true;
+        const float step = std::min(dt / std::max(s.slotFade, 0.05f), 1.0f);
+        for (Slot& slot : g_slots)
+        {
+            if (Isolated(kIsoNoFade)) slot.contactWeight = slot.contact ? 1.0f : 0.0f;
+            else slot.contactWeight = std::clamp(slot.contactWeight + (slot.contact ? step : -step), 0.0f, 1.0f);
+        }
 
         // Forget motion of lights unseen for a while.
         if (g_motion.size() > 1024)

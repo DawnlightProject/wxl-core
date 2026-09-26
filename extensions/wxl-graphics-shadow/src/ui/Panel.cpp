@@ -53,7 +53,7 @@ namespace
         ui::Text(sh::sun::Status());
         ui::Text(sh::horizon::Status());
         ui::Text(sh::caster::Status());
-        ui::Textf("bodies: %d capsules near the camera", sh::bodies::Count());
+        ui::Textf("bodies: %d capsules near the player", sh::bodies::Count());
         ui::Separator();
         const sl::Slot* slots = sl::List();
         for (int i = 0; i < sl::kSlots; ++i)
@@ -86,9 +86,9 @@ namespace
         ui::Slider("Moving lights with maps", &s.movingMaps, 0, 2,
                    "How many moving or carried lights hold a map (the player's own torch first). Each redraws all six faces with every caster each frame, the costliest kind.");
         ui::Slider("Own housing (yards)", &s.housing, 0.0f, 1.5f,
-                   "Casters this near a lamp (its own cage, post and bracket) cast nothing, so a lamp does not throw its own fixture across the street.");
+                   "Casters this near a lamp (its own cage, post and bracket) cast nothing, so a lamp does not throw its own fixture across the street. Its contact shadow skips them too, so a wall just behind a lantern shows no copy of the lantern's frame.");
         ui::Slider("Carried item housing (yards)", &s.carriedHousing, 0.0f, 1.0f,
-                   "The same for a carried light: the torch itself and the hand holding it cast nothing.");
+                   "The same for a carried light: the torch itself and the hand holding it cast nothing, in its map and in its contact shadow.");
         ui::Slider("Carrier margin (yards)", &s.carrierMargin, 0.0f, 0.5f,
                    "A carried light never shadows its own carrier: surfaces inside the carrier's body capsule, widened by this, are lit by it. The carrier's shadow still falls on everything else.");
         ui::Slider("Softness", &s.softness, 0.0f, 4.0f,
@@ -109,13 +109,18 @@ namespace
         ui::Separator();
         ui::Check("Body capsules", &s.capsules,
                   "Bodies (the player, NPCs, creatures) cut the beam of lamps without a map, tested along the whole segment from each surface to the light, with a penumbra that widens along it.");
-        ui::Slider("Capsule range (yards)", &s.capsuleRange, 10.0f, 120.0f, "Bodies this near the camera take part (the 32 nearest).");
+        ui::Slider("Capsule range (yards)", &s.capsuleRange, 10.0f, 120.0f,
+                   "Bodies this near the player (the camera without one) take part: the 32 nearest the player, so turning the camera changes nothing. A listed body stays listed unless a newcomer is clearly nearer, and each body's shadow fades in and out over 0.3 s.");
         ui::Slider("Capsule radius (per yard of height)", &s.capsuleRadius, 0.1f, 0.4f, "How thick a body's capsule is for its height.");
         ui::Slider("Capsule penumbra", &s.capsulePenumbra, 0.0f, 4.0f, "How soft a capsule's shadow grows with the light's source size.");
         ui::Separator();
-        ui::Slider("Slot hold (seconds)", &s.slotHold, 0.0f, 5.0f, "A light keeps its shadow slot at least this long, so slots never flap.");
-        ui::Slider("Fade (seconds)", &s.slotFade, 0.05f, 2.0f, "How long a light's shadow, or its map, takes to fade in or out.");
-        ui::Slider("Slot margin", &s.slotMargin, 1.0f, 3.0f, "How much more important a light must be than a holder to take its slot or map.");
+        ui::Slider("Slot hold (seconds)", &s.slotHold, 0.0f, 5.0f,
+                   "A light keeps its shadow slot at least this long, so slots never flap. Lights are ranked by their brightness and their distance to the player, not to the camera, so turning the camera hands nothing over.");
+        ui::Slider("Map hold (seconds)", &s.mapHold, 0.0f, 5.0f,
+                   "A light keeps its shadow map at least this long once it has one, so maps never flap between lamps of like importance. A lamp that starts or stops moving still changes its kind of map.");
+        ui::Slider("Fade (seconds)", &s.slotFade, 0.05f, 2.0f, "How long a light's shadow, its map or its contact shadow takes to fade in or out.");
+        ui::Slider("Slot margin", &s.slotMargin, 1.0f, 3.0f,
+                   "How much more important a light must be than a holder to take its slot, its map or its contact shadow.");
     }
 
     void SunTab()
@@ -152,8 +157,10 @@ namespace
         ui::Check("Contact shadows", &s.contact,
                   "Short shadows from the depth buffer that ground feet, stones and grass. Fixed steps, no noise, and a surface never shadows itself.");
         ui::Slider("Towards the sun (yards)", &s.contactSun, 0.0f, 4.0f, "How far the march goes towards the sun or the moon.");
-        ui::Slider("Lamps with one", &s.contactSlots, 0, 4, "The most important lamps that also get contact shadows.");
-        ui::Slider("Towards a lamp (yards)", &s.contactLamp, 0.0f, 3.0f, "How far the march goes towards a lamp at most (never more than half the way).");
+        ui::Slider("Lamps with one", &s.contactSlots, 0, 4,
+                   "The most important lamps that also get contact shadows. A lamp keeps its contact shadow unless another beats it by the slot margin, and it fades in and out with the slot fade.");
+        ui::Slider("Towards a lamp (yards)", &s.contactLamp, 0.0f, 3.0f,
+                   "How far the march goes towards a lamp at most (never more than half the way). The lamp's own fixture, within its housing, blocks nothing.");
         ui::Slider("Thickness (yards)", &s.contactThickness, 0.1f, 2.0f,
                    "How thick an object seen in the depth buffer is assumed to be: thinner lets light pass behind poles and legs.");
         ui::Slider("Strength", &s.contactStrength, 0.0f, 1.0f, "How dark contact shadows get.");

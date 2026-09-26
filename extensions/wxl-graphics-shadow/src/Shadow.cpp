@@ -131,7 +131,7 @@ namespace
             const float* eye = f->view.eye;
             if (Vulkan())
             {
-                bd::Update(eye, s.capsuleRange, s.capsuleRadius);
+                bd::Update(eye, s.capsuleRange, s.capsuleRadius, dt, !sh::Isolated(sh::kIsoNoFade));
                 sl::Choose(eye, Now(), dt);
             }
             else sl::Idle();

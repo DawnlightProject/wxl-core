@@ -27,7 +27,7 @@ their history.
 |---|---|---|
 | Acne stripes | A fixed receiver bias against maps whose texel grows with distance; contact shadows compared against a fixed 3 cm | Normal offset in texels of the map at the receiver, slope-scaled; EVSM for the lamps (no depth compare to go wrong); the contact march rejects samples on the receiver's own plane |
 | Dotted checkerboard | Half-resolution lighting on a checkerboard of near and far samples; PCSS discs turned per pixel and never filtered | Masks traced at full resolution by default; the half-resolution option upsamples with a joint-bilateral filter. No random rotation anywhere: every filter is a fixed, dense kernel |
-| Flicker when the camera moves | Per-pixel noise tied to the screen; slots handed over at once | Every filter lives in the map's texel space, which is fixed to the world; slots and maps fade over half a second |
+| Flicker when the camera moves | Per-pixel noise tied to the screen; slots handed over at once | Every filter lives in the map's texel space, which is fixed to the world; slots, maps, contact shadows and body capsules are ranked from the player, not the orbiting camera, and fade in and out |
 | Shadows depend on the light's origin, not the beam | A receiver skip sphere around the light; capsule tests against the light's position only | Capsules are tested along the whole segment from the receiver to the light, with a penumbra that widens along it. A carrier is skipped by its own capsule volume, not by a sphere around its torch |
 | No shadow from a carried torch | Carried lights shared the four slots with every lamp | A carried light always gets a combined map when it matters (the player's own torch first), with the torch and hand excluded as housing |
 
@@ -82,7 +82,11 @@ them.
 - its list index, and the carrier's GUID when known.
 
 Without a call for two frames, the service reads `WXL_GraphicsLightsApi::Current` itself and ranks
-by brightness over distance. So lights may integrate at its own pace.
+by brightness over distance to the player. So lights may integrate at its own pace.
+
+The service ranks from the player either way (section 2.2). Lights ranks by brightness over distance
+to the eye, `luma / (1 + d^2 / max(r^2, 1))`, so a handed-in importance is re-centred onto the
+player: multiplied by `(1 + d_eye^2 / max(r^2, 1)) / (1 + d_player^2 / max(r^2, 1))`.
 
 ### 1.5 Surfaces: the masks
 
@@ -154,6 +158,11 @@ when the root of its model's attachment chain (`unit::ModelParent`) is a unit's 
 
 ### 2.2 Policy
 
+- **Importance from the player.** The camera orbits the player in third person, so a ranking by
+  distance to the eye changed whenever the view turned, and slots, maps and contact shadows changed
+  hands with it. Every ranking here is taken from the player's position instead (the eye when there
+  is no player): lights' importance re-centred (section 1.4), or brightness over distance to the
+  player when the service reads lights' list itself.
 - **Slots.** 16 slots, ranked by importance with hysteresis. A slot is held at least 1 s, and a
   candidate must beat the weakest holder by 25 % to take it. A light gaining or losing a slot fades
   over 0.5 s.
@@ -163,7 +172,14 @@ when the root of its model's attachment chain (`unit::ModelParent`) is a unit's 
     see a unit.
   - Moving lights, carried torches first (the player's own first of all): one combined core slot,
     all six faces each frame.
+  - A map is held at least 1 s (`WXL_GFX_SHADOW_MAPS_HOLD`), and a candidate must beat a holder by
+    the same 25 % to take it.
   - A slot's map share fades over 0.5 s: capsules until the map is filled, then the map.
+- **Still or moving.** A light is moving when it is carried, or when it moves away from where it
+  rests by more than 0.5 yd at once, or by more than 0.1 yd through motion on four frames in a row.
+  A switch drops the light's map and builds the other kind, so a single small jump (a light put back
+  a few centimetres away) does not count. A moving light is still again after 2 s without moving
+  0.1 yd.
 - **Carried lights.** Housing of 0.3 yd, so the torch and the hand cast nothing. The carrier is found
   by GUID, or as the capsule nearest the light. Receivers inside the carrier's capsule skip that
   light's shadow, so the body is lit by its own torch while its shadow falls on everything else.
@@ -178,6 +194,13 @@ Each mapped light's cube is filtered in Vulkan into one shared atlas (6 x 8 face
    core's 512 faces into 256.
 3. The mips are built per face.
 4. Only faces the core redrew this frame are converted.
+
+Every map converts again from scratch, into a cleared atlas, when the EVSM exponents change or the
+core recreates its atlases (its generation changes). Both are decided at the start of the record,
+before the atlas is cleared, so the clear and the conversion of every face land in the same record.
+Decided during the conversion, the clear came one record later and wiped faces that were never
+converted again. The block's map rows are written after the conversion, so a map filled in a record
+reads as ready in that record, and its slot never drops to capsules for a frame.
 
 A lookup is one trilinear fetch plus Chebyshev bounds and a light-bleeding reduction. Its footprint
 grows with the source size and the receiver's distance, so penumbrae widen away from the caster.
@@ -195,8 +218,13 @@ fine contact EVSM softens.
 
 Capsules come from the core's unit walk:
 - the player, NPCs and creatures;
-- the 32 nearest the camera within 60 yd;
+- the 32 nearest the player (the camera without one) within 60 yd of it, so turning the camera
+  changes nothing;
 - feet to head height, radius from height.
+
+A listed unit keeps its row unless a newcomer is 25 % nearer. Each unit's occlusion fades in and out
+over 0.3 s by its GUID: the weight rides in the capsule row's B.w, and a row fading out keeps its
+place until it reaches nothing.
 
 Per slot, a mask holds the capsules within the light's reach.
 
@@ -214,7 +242,8 @@ Lamps outside the maps still have bodies cutting their beams, on surfaces and in
 Contact shadows are screen-space and part of the mask pass:
 - **Sun and moon:** a march over 1.5 yd, up to 32 samples.
 - **Up to four slots** (the most important): a march over up to 1 yd, never further than half the
-  distance to the light, up to 16 samples.
+  distance to the light, up to 16 samples. A slot keeps its contact shadow unless another beats it by
+  the slot margin (25 %), and the contact shadow fades in and out over the slot fade (0.5 s).
 
 They stay stable:
 - There is no jitter. The samples are spaced evenly along the ray's image on screen, about one every
@@ -225,6 +254,10 @@ They stay stable:
 - **No self-intersection.** A sample is ignored when its depth lies on the receiver's own plane
   (from the G-buffer normal, or from depth where there is none), within a tolerance that grows with
   distance. That plane test, not a fixed thickness, is what removes stripes.
+- **Not the lamp's own fixture.** Towards a lamp, a sample whose scene point lies within the lamp's
+  housing (0.45 yd, 0.3 yd for a carried light) is ignored, as the lamp's map ignores those casters.
+  On a wall just behind a lantern the march ends on the lantern's frame on screen, and counting it
+  drew a dilated copy of the lantern's outline on the wall.
 - A sample only occludes within a thickness of 0.35 yd behind the depth buffer, and the result fades
   out towards screen edges and in the distance.
 
@@ -265,6 +298,9 @@ bilinear taps weighted by how close each traced depth lies to the pixel's own.
 
 - **Bodies are vertical capsules.** A corpse lying on the ground is still a standing capsule for
   lamps without a map. Mapped lamps draw the real body.
+- **The handed-in ranking is re-centred on a formula.** The re-centring (section 1.4) assumes lights
+  ranks by brightness over distance to the eye. Should lights rank from the player itself, the
+  re-centring must go, or it counts the distance to the player twice.
 - **The static set.** A still lamp's static map is refreshed, in turn, whenever the engine's static
   caster list changes as a set (a hash of its M2 entries and WMO list). Only the M2 entries are
   hashed by content. The WMO part is hashed by its list pointers, so if the engine rebuilds those

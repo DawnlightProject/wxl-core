@@ -98,12 +98,6 @@ namespace
         const Images& m = Img();
         const WXL_OmniShadowsApi* core = sl::Core();
         if (!core || m.atlas.image == VK_NULL_HANDLE || !m.atlasLevel[0]) return 0;
-        const uint32_t generation = core->Generation();
-        if (generation != g_coreGeneration)
-        {
-            g_coreGeneration = generation;
-            ResetMaps();
-        }
         const uint32_t F = m.atlasFace;
         uint32_t live = 0;
         sl::Map* maps = sl::Maps();
@@ -186,8 +180,9 @@ namespace
         }
     }
 
-    /// The public block: everything shadow.hlsli reads, camera-relative to this frame's eye.
-    void BuildBlock(Block& b, const float eye[3], const su::Cascades& cascades, bool haveCascades, uint32_t liveMaps)
+    /// The public block: everything shadow.hlsli reads, camera-relative to this frame's eye, except the
+    /// maps, the slots and the list index, which BuildLights adds once the maps are converted.
+    void BuildBlock(Block& b, const float eye[3], const su::Cascades& cascades, bool haveCascades)
     {
         std::memset(&b, 0, sizeof b);
         const Settings& s = Config();
@@ -235,10 +230,16 @@ namespace
         {
             const bd::Capsule& c = caps[k];
             Set(b.r[WXL_SHADOW_ROW_CAPSULES + k * 2], c.a[0] - eye[0], c.a[1] - eye[1], c.a[2] - eye[2], c.radius);
-            Set(b.r[WXL_SHADOW_ROW_CAPSULES + k * 2 + 1], c.b[0] - eye[0], c.b[1] - eye[1], c.b[2] - eye[2], 0.0f);
+            Set(b.r[WXL_SHADOW_ROW_CAPSULES + k * 2 + 1], c.b[0] - eye[0], c.b[1] - eye[1], c.b[2] - eye[2],
+                std::clamp(c.weight, 0.0f, 1.0f));
         }
+    }
 
-        // The maps: where the core drew them from.
+    /// The block's maps (where the core drew them from, and whether they hold every face yet), the slots
+    /// and the list index. After the conversion, so a map it filled this record reads as ready at once.
+    void BuildLights(Block& b, const float eye[3], uint32_t liveMaps)
+    {
+        const Settings& s = Config();
         const WXL_OmniShadowsApi* core = sl::Core();
         const sl::Map* maps = sl::Maps();
         bool mapValid[sl::kMaps] = {};
@@ -299,13 +300,18 @@ namespace
         const su::Bodies& bodies = su::Current();
         const int body = !s.sun ? -1 : (bodies.night ? (s.moon && bodies.moonWeight > 0.01f ? 1 : -1) : (bodies.sunWeight > 0.01f ? 0 : -1));
         Set(p.r[SH_ROW_CONTACT2], 32.0f, 16.0f, float(body), 60.0f);   // most steps: the march takes one every 1.5 pixels
-        float cs[4] = { -1.0f, -1.0f, -1.0f, -1.0f };
-        int n = 0;
-        const sl::Slot* slots = sl::List();
-        for (int i = 0; i < sl::kSlots && n < 4; ++i)
-            if (slots[i].id && slots[i].contact) cs[n++] = float(i);
-        Set(p.r[SH_ROW_CSLOTS], cs[0], cs[1], cs[2], cs[3]);
         Set(p.r[SH_ROW_DEBUG], float(s.view), float(std::clamp(s.viewSlot, 0, WXL_SHADOW_MAX_SLOTS - 1)), 0.0f, 0.0f);
+        // Each slot's contact share, fading as it gains or loses its contact shadow, and its housing: the
+        // march towards a lamp skips the lamp's own fixture, as its map does.
+        const sl::Slot* slots = sl::List();
+        for (int i = 0; i < sl::kSlots; ++i)
+        {
+            const sl::Slot& slot = slots[i];
+            float* pair = p.r[SH_ROW_CSLOTS + i / 2] + (i & 1) * 2;
+            const bool carried = (slot.light.flags & WXL_GFX_SHADOW_LIGHT_CARRIED) != 0;
+            pair[0] = slot.id ? std::clamp(slot.contactWeight, 0.0f, 1.0f) : 0.0f;
+            pair[1] = carried ? s.carriedHousing : s.housing;
+        }
     }
 }
 
@@ -349,13 +355,27 @@ namespace wxl::gfx::shadow::gpu
             g_exponents[1] = s.evsmNegative;
             ResetMaps();
         }
+        // The core recreated its atlases: every map converts again, the same way. Both resets come
+        // before Prime, which clears the atlas they ask for, so the clear and the conversion of every
+        // face land in this one record. Found inside the conversion, the reset's clear only came in the
+        // next record, after every face had been converted: it wiped them all, and the maps, still
+        // ready, lost their shadows until the core happened to redraw each face.
+        if (const WXL_OmniShadowsApi* core = s.maps ? sl::Core() : nullptr)
+        {
+            const uint32_t generation = core->Generation();
+            if (generation != g_coreGeneration)
+            {
+                g_coreGeneration = generation;
+                ResetMaps();
+            }
+        }
 
         const bool timed = s.timers && BeginTimers(cmd, vk.slot);
         Prime(api, cmd);
         hz::Update(api, cmd, eye);
         if (timed) MarkTimer(cmd, kSpanUpload);
 
-        // The public block first: the conversion reads its exponents.
+        // The public block before the conversion, which reads its exponents.
         FrameSet& set = Current();
         set = FrameSet{};
         su::Cascades cascades;
@@ -368,7 +388,7 @@ namespace wxl::gfx::shadow::gpu
             }
         uint64_t jobs = 0;
         static Block block;
-        BuildBlock(block, eye, cascades, haveCascades, 1);
+        BuildBlock(block, eye, cascades, haveCascades);
         if (!Upload(api, &block, sizeof block, set.block)) return false;
         if (hz::Volume()) set.horizon = *hz::Volume();
         if (hz::Heights()) set.heights = *hz::Heights();
@@ -379,8 +399,14 @@ namespace wxl::gfx::shadow::gpu
         if (timed) MarkTimer(cmd, kSpanConvert);
         BuildMips(api, cmd, jobs);
         if (timed) MarkTimer(cmd, kSpanMips);
-        // Maps that became ready this frame: the block says so from the next frame (a frame of capsules).
-        (void)live;
+
+        // The maps and the slots once the conversion has run, so a map it filled in this record reads as
+        // ready in this record: built before it, a map converted again after a reset read as unfilled
+        // for a frame, and its slot dropped to capsules for that frame. The block's memory is
+        // host-coherent and the GPU reads it only when the block is submitted after this record, so the
+        // conversion above (which reads nothing but the exponents) and every pass below see these rows.
+        BuildLights(block, eye, live);
+        std::memcpy(set.block.mapped, &block, sizeof block);
 
         // The masks.
         Images& m = Img();

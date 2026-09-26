@@ -53,7 +53,7 @@
 #define WXL_SHADOW_ROW_CAPSULE     24   // capsules, penumbra scale, self margin yards, 0
 #define WXL_SHADOW_ROW_EVSM        25   // positive exponent, negative exponent, lod bias, softness scale
 #define WXL_SHADOW_ROW_ATLAS       26   // 1 / atlas width, 1 / atlas height, face texels, mips
-#define WXL_SHADOW_ROW_CAPSULES    27   // 32 capsules x 2 rows: (a rel xyz, radius) (b rel xyz, 0)
+#define WXL_SHADOW_ROW_CAPSULES    27   // 32 capsules x 2 rows: (a rel xyz, radius) (b rel xyz, weight 0..1: fades in and out)
 #define WXL_SHADOW_ROW_SLOTS       91   // 16 slots x 4 rows, see below
 #define WXL_SHADOW_ROW_MAPS        155  // 8 maps x 2 rows, see below
 #define WXL_SHADOW_ROW_INDEX       171  // 32 rows of uint4: list index i -> slot + 1 (0 none) at row i / 4, component i % 4
@@ -70,7 +70,7 @@
 //   +0 light position rel xyz, radius (0: the slot is free)
 //   +1 spot axis xyz, cos of the half-angle (<= -1 a point light)
 //   +2 weight, map share, source size yards, map index (-1 none)
-//   +3 capsule mask (asuint), carrier capsule (-1 none), receiver margin yards, contact length yards
+//   +3 capsule mask (asuint), carrier capsule (-1 none), receiver margin yards, 0
 #define WXL_SHADOW_SLOT_ROWS 4
 
 // A map's rows:
