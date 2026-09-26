@@ -71,7 +71,7 @@ uint LightAt(float entry)
 // The closest point of a tube to p (the representative-point approximation of an area light).
 float3 LightPoint(float3 p, WxlLightSource s)
 {
-    if (!WxlSourceHas(s.flags, 0x02u)) return s.position;
+    if (!WxlSourceHas(s.flags, kWxlSourceTube)) return s.position;
     float t = clamp(dot(p - s.position, s.extent) / max(dot(s.extent, s.extent), 1e-4), -1.0, 1.0);
     return s.position + s.extent * t;
 }
@@ -114,11 +114,13 @@ float LightCone(WxlLightSource s, float3 fromLight)
     return smoothstep(s.cosOuter, max(s.cosInner, s.cosOuter + 1e-3), dot(fromLight, s.axis));
 }
 
-// A flame's light runs whiter near its source (within about six soft radii).
-float3 LightHot(float3 rgb, float d, float softRadius, float hot)
+// A flame's light runs whiter near its source, within about three glow radii (the lamp head's own
+// size). Not the soft core: a carried light's is the 1 yd carried core, which whitened six yards
+// around every torch in hand.
+float3 LightHot(float3 rgb, float d, float emissiveRadius, float hot)
 {
     if (hot <= 0.0) return rgb;
-    float core = saturate(1.0 - d / max(6.0 * softRadius, 0.3));
+    float core = saturate(1.0 - d / max(3.0 * emissiveRadius, 0.3));
     float l = Luma(rgb);
     return lerp(rgb, l.xxx, core * core * hot);
 }
@@ -201,6 +203,19 @@ float3 LightShape(uint index, WxlLightSource s, float3 fromLight, float footprin
     float profile = LightProfile(s.profile, fromLight);
     if (has > 0.5 && (abs(s.profile - 1.0) < 0.5 || abs(s.profile - 4.0) < 0.5)) profile = 1.0;
     return profile * cookie;
+}
+
+// A light's shape averaged over every direction: its cookie's mean colour (tinted glass included),
+// floored, scaled and spared for a flame as above. The bounce takes this, as it gathers the lamp's
+// light from all around, where a cage's bars have long blurred into their mean.
+float3 LightMeanShape(uint index, WxlLightSource s)
+{
+    if (cookieC.z <= 0.0 || Isolated(LIGHTS_ISO_NO_COOKIES)) return 1.0;
+    float4 b = CookieRow(float(index), 1.0);
+    if (b.y + b.z + b.w <= 0.0) return 1.0;
+    float3 cookie = lerp(1.0, max(b.yzw, cookieC.w), cookieC.z);
+    if (s.profile > 2.5 && s.profile < 3.5) cookie = lerp(cookie, 1.0, cookieD.w);
+    return cookie;
 }
 
 // --- rooms ------------------------------------------------------------------------------------------------

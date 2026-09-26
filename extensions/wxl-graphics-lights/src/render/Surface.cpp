@@ -109,12 +109,19 @@ namespace wxl::gfx::lights::surface
         s.fogDims = ConfigFloat("WXL_GFX_LIGHTS_SURFACE_FOG_DIMS", s.fogDims, 0.0f, 4.0f);
         s.outdoorIndoors = ConfigFloat("WXL_GFX_LIGHTS_SURFACE_OUTDOOR_INDOORS", s.outdoorIndoors, 0.0f, 1.0f);
         s.indoorOutdoors = ConfigFloat("WXL_GFX_LIGHTS_SURFACE_INDOOR_OUTDOORS", s.indoorOutdoors, 0.0f, 1.0f);
+        s.bounce = ConfigFloat("WXL_GFX_LIGHTS_SURFACE_BOUNCE", s.bounce, 0.0f, 1.0f);
+        s.bounceCore = ConfigFloat("WXL_GFX_LIGHTS_SURFACE_BOUNCE_CORE", s.bounceCore, 0.25f, 6.0f);
+        s.engineKeep = ConfigFloat("WXL_GFX_LIGHTS_SURFACE_ENGINE_KEEP", s.engineKeep, 0.0f, 1.0f);
+        s.bakedKeep = ConfigFloat("WXL_GFX_LIGHTS_SURFACE_BAKED_KEEP", s.bakedKeep, 0.0f, 1.0f);
+        s.adapt = ConfigFloat("WXL_GFX_LIGHTS_SURFACE_ADAPT", s.adapt, 0.0f, 1.0f);
         s.sun = ConfigBool("WXL_GFX_LIGHTS_SURFACE_SUN", s.sun != 0) ? 1 : 0;
         s.deepen = ConfigFloat("WXL_GFX_LIGHTS_SURFACE_SUN_DEEPEN", s.deepen, 0.0f, 1.0f);
         s.prefilter = ConfigFloat("WXL_GFX_LIGHTS_COOKIES_PREFILTER", s.prefilter, 0.5f, 16.0f);
         s.view = ConfigInt("WXL_GFX_LIGHTS_VIEW", s.view, 0, LIGHTS_VIEW_COUNT - 1);
         LIGHTS_LOG_INFO("surfaces: %s diffuse, specular %.2f, wetness %.2f, emissive %.2f, fog dims %.2f, sun factor %d (deepen %.2f)",
                         s.burley ? "Burley" : "Lambert", s.specular, s.wetness, s.emissive, s.fogDims, s.sun, s.deepen);
+        LIGHTS_LOG_INFO("surfaces: bounce %.2f (core %.2f yd), engine lights kept %.2f, baked lights kept %.2f, local adaptation %.2f",
+                        s.bounce, s.bounceCore, s.engineKeep, s.bakedKeep, s.adapt);
     }
 
     void FillConstants(gpu::Constants& c)
@@ -122,7 +129,9 @@ namespace wxl::gfx::lights::surface
         using gpu::Set;
         Set(c.shade, g_cfg.burley ? 1.0f : 0.0f, std::max(g_cfg.specular, 0.0f), std::clamp(g_cfg.wetness, 0.0f, 1.0f),
             FogExtinction() * std::max(g_cfg.fogDims, 0.0f));
-        Set(c.shade2, std::max(g_cfg.emissive, 0.0f), std::clamp(g_cfg.roughness, 0.3f, 1.5f), 0.0f, 0.0f);
+        Set(c.shade2, std::max(g_cfg.emissive, 0.0f), std::clamp(g_cfg.roughness, 0.3f, 1.5f), std::clamp(g_cfg.adapt, 0.0f, 1.0f), 0.0f);
+        Set(c.lamp, std::clamp(g_cfg.bounce, 0.0f, 1.0f), std::clamp(g_cfg.bounceCore, 0.25f, 6.0f), std::clamp(g_cfg.engineKeep, 0.0f, 1.0f),
+            std::clamp(g_cfg.bakedKeep, 0.0f, 1.0f));
         c.roomInfo[2] = std::clamp(g_cfg.outdoorIndoors, 0.0f, 1.0f);
         c.roomInfo[3] = std::clamp(g_cfg.indoorOutdoors, 0.0f, 1.0f);
         c.cookieE[2] = std::max(g_cfg.prefilter, 0.1f);
@@ -207,11 +216,22 @@ namespace wxl::gfx::lights::surface
         ui::Slider("Lamp heads glow", &s.emissive, 0.0f, 3.0f,
                    "How brightly the glass and flame of a lamp glow, whatever way they face. Bloom will pick this up later.");
         ui::Slider("Fog dims lamps", &s.fogDims, 0.0f, 3.0f,
-                   "How much the fog around the camera thins a lamp's light on its way to a surface: in thick fog a lamp lights less and glows more. 0 ignores the fog.");
+                   "How much the fog around the camera thins a lamp's light on its way to a surface: in thick fog a lamp lights less and glows more. The fog's density is eased over about a second, so lamps do not pulse as the camera swings through thicker and thinner patches, and taken at most as a light haze. 0 ignores the fog.");
         ui::Slider("Outdoor light indoors", &s.outdoorIndoors, 0.0f, 1.0f,
                    "How much of a street lamp reaches inside a building (through windows and doors). Walls are not always drawn, so without this lamps light interiors through them.");
         ui::Slider("Indoor light outdoors", &s.indoorOutdoors, 0.0f, 1.0f,
                    "How much of a room's lamp reaches outside every room: the spill through doorways and windows.");
+        ui::Separator();
+        ui::Slider("Lamp bounce", &s.bounce, 0.0f, 0.5f,
+                   "The light a lamp's pool throws back onto its surroundings: the backs and shadowed sides of walls, crates and people near a lamp get a soft glow, so a pool no longer looks pasted onto a dark scene. 0 only the direct light.");
+        ui::Slider("Bounce softness", &s.bounceCore, 0.25f, 4.0f,
+                   "Yards around a lamp over which the bounce stays even instead of rising towards the flame. Higher spreads it wider and flatter.");
+        ui::Slider("Engine lights kept", &s.engineKeep, 0.0f, 1.0f,
+                   "How much a lamp the game already lights the world with (a torch in hand, braziers, campfires) adds on top of the game's own light. At 1 the game's pool and this one add up and look twice as bright.");
+        ui::Slider("Baked lights kept", &s.bakedKeep, 0.0f, 1.0f,
+                   "How much a building's own lamp adds on the walls and floors of its rooms, where the game already painted its light into the building. Outdoors and on models it is added in full.");
+        ui::Slider("Local adaptation", &s.adapt, 0.0f, 1.0f,
+                   "Where a lamp far outshines the game's own light (at night, in a dark room), the eye adapts to it: its colour fades a little towards white, so a torch-lit wall reads warm white rather than orange, while the dim edge of the pool keeps its colour. 0 keeps every lamp's colour.");
         ui::Separator();
         ui::Check("Sun and moon shadows", &s.sun,
                   "The shadow the game's own sun and moon light lacks (terrain, contact, deeper cascades), from wxl-graphics-shadow. The game's sun is never added twice.");

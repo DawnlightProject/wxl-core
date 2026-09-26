@@ -25,6 +25,7 @@
 #include "wxl/gfx/Client.hpp"
 #include "common/ExtensionConfig.hpp"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
 
@@ -98,14 +99,56 @@ namespace wxl::gfx::lights
         return f && f->Active && f->Active() != 0;
     }
 
-    /// The fog's extinction per yard around the camera, 0 without the fog.
-    inline float FogExtinction()
+    /// The fog's extinction per yard as it probes it at the eye, 0 without the fog. Raw: a few frames
+    /// late and unsmoothed; the lamps read FogExtinction below.
+    inline float FogCameraExtinction()
     {
         const WXL_GraphicsFogApi* f = Fog();
         if (!f || f->structSize < offsetof(WXL_GraphicsFogApi, CameraDensity) + sizeof(void*) || !f->CameraDensity) return 0.0f;
         if (f->Active && !f->Active()) return 0.0f;
         const float d = f->CameraDensity();
         return d > 0.0f ? (d < 2.0f ? d : 2.0f) : 0.0f;
+    }
+
+    /// The most extinction per yard the lamps' thinning takes: a haze of about 100 yd visibility, which
+    /// still leaves three quarters of a lamp at 10 yd. The probe is taken at the eye, not between a lamp
+    /// and what it lights, and the fog already dims the way from there to the eye: inside a fog bank a
+    /// denser reading only put every lamp out at once.
+    constexpr float kLampFogCap = 0.03f;
+
+    /// Seconds the lamps' extinction takes to follow the probe (the time constant of an exponential).
+    constexpr float kLampFogSeconds = 1.0f;
+
+    namespace detail
+    {
+        /// The extinction the lamps see this frame; negative until the first frame seeds it.
+        inline float& LampFog()
+        {
+            static float v = -1.0f;
+            return v;
+        }
+    }
+
+    /// Once per frame, before the constants are filled: eases the lamps' extinction towards the fog's
+    /// probe, capped. The probe samples the density within a yard of the eye, so an orbiting camera
+    /// passing through thicker and thinner patches carried every lamp up and down with it; an
+    /// exponential over about a second (frame-rate independent) keeps the fog's slow changes and drops
+    /// the camera's.
+    inline void FollowFogExtinction(float dt)
+    {
+        const float probe = FogCameraExtinction();
+        const float target = probe < kLampFogCap ? probe : kLampFogCap;
+        float& v = detail::LampFog();
+        if (v < 0.0f) v = target;
+        else if (dt > 0.0f) v += (target - v) * (1.0f - std::exp(-(dt < 5.0f ? dt : 5.0f) / kLampFogSeconds));
+    }
+
+    /// The fog's extinction per yard between a lamp and what it lights (surfaces and air alike): the
+    /// probe at the eye, smoothed and capped by FollowFogExtinction. Eases to 0 without the fog.
+    inline float FogExtinction()
+    {
+        const float v = detail::LampFog();
+        return v > 0.0f ? v : 0.0f;
     }
 }
 

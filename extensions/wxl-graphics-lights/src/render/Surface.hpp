@@ -36,6 +36,11 @@ namespace wxl::gfx::lights::surface
         float fogDims = 1.0f;         // share of the fog's extinction between a lamp and a surface
         float outdoorIndoors = 0.12f; // an outdoor light reaching into a room
         float indoorOutdoors = 0.2f;  // a room's light reaching outside every room
+        float bounce = 0.15f;         // share of each lamp's light bounced back onto its surroundings
+        float bounceCore = 1.5f;      // yards: the bounce's soft core, so it never peaks at the source
+        float engineKeep = 0.5f;      // share added of a light the engine already lights the world with
+        float bakedKeep = 0.35f;      // share added of a WMO light on its building's interior (baked there)
+        float adapt = 0.4f;           // local adaptation: how much lamp light far above the engine's loses its tint
         int   sun = 1;                // the sun and moon shadow the engine lacks
         float deepen = 0.6f;          // the engine's cascades deepened past its own shading
         float prefilter = 3.0f;       // cookie texels a footprint may span before the pattern gives way

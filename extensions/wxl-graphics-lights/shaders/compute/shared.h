@@ -107,7 +107,8 @@
     XN(roomWeights, 3) /* each room's weight (fading in or out), four to a row */                         \
     /* shading */                                                                                        \
     X1(shade)          /* diffuse model (0 Lambert, 1 Burley), specular, wetness, fog extinction x share */\
-    X1(shade2)         /* emissive strength, roughness scale, 0, 0 */                                    \
+    X1(shade2)         /* emissive strength, roughness scale, local adaptation, 0 */                     \
+    X1(lamp)           /* bounce share, bounce core yards, engine light keep, baked light keep */        \
     /* sun and moon (the engine's own terms, gamma) */                                                   \
     X1(sunDir)         /* towards the light the engine shades with (world), on */                        \
     X1(sunColors)      /* luma of the engine's diffuse, luma of its ambient, deepen, 0 */                \
