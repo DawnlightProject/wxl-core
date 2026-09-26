@@ -24,7 +24,9 @@
 #include <windows.h>
 #include <d3d9.h>
 
+#include <cstring>
 #include <unordered_map>
+#include <vector>
 
 // The engine only ever binds render target 0 (CGxDeviceD3d::DeviceSetRenderTarget 0x0068F770 calls
 // SetRenderTarget(0, ...) and re-binds the depth cached at device +0x3B40), so render target 1 would
@@ -33,6 +35,13 @@
 // target 0 is. Shaders that do not write oCn leave undefined values in a bound target, so each write
 // mask (COLORWRITEENABLE1, COLORWRITEENABLE2) is opened only for shaders that write that output, and
 // never while blending.
+//
+// A shader the G-buffer rewrite does not cover (it writes oC0 alone) left the normal and albedo of
+// whatever was drawn at its pixels before it: an interior wall, a beam, kept the terrain behind them, and
+// lighting read that as the wall's surface (the mountain's shape and texture seen through the wall).
+// While the world pass runs, such a shader is bound as a twin that also writes the "no G-buffer data"
+// marker (gbuffer::kMarkerNoData: render target 1 all 0, render target 2's alpha the marker code), but
+// only while its draws write depth: a full-screen pass drawn over the world never marks the whole screen.
 namespace wxl::runtime::mrt
 {
     namespace
@@ -59,12 +68,112 @@ namespace wxl::runtime::mrt
         IDirect3DSurface9* g_target   = nullptr;
         IDirect3DSurface9* g_target2  = nullptr; // render target 2, null when not used this pass
         uint32_t           g_psWrites = 0;      // bit n: the bound pixel shader writes oCn
+        bool               g_psTwin   = false;  // the bound pixel shader is a marking twin (see above)
         bool               g_blend    = false;
+        bool               g_zwrite   = true;   // D3DRS_ZENABLE and D3DRS_ZWRITEENABLE both on
+        DWORD              g_zenable  = TRUE, g_zwriteState = TRUE;
         DWORD              g_mask     = 0xFFFFFFFF;
         DWORD              g_mask2    = 0xFFFFFFFF;
         uint32_t           g_capsState = 0;      // 0 unknown, 1 usable, 2 refused
 
         std::unordered_map<IDirect3DPixelShader9*, uint32_t> g_writes;
+
+        /// A marking twin, by its original: the twin (null when the original could not be patched) and the
+        /// original's bytecode size, checked on every use so a released shader whose address comes back
+        /// for another never binds the old one's twin.
+        struct Twin { IDirect3DPixelShader9* twin; UINT size; };
+        std::unordered_map<IDirect3DPixelShader9*, Twin> g_twins;
+        uint32_t g_twinsMade = 0;
+
+        // RT2's alpha for "a surface is here, the G-buffer holds nothing of it": material kind 2 (building)
+        // with gloss 63, a code no rewritten shader writes (game/GBuffer.hpp).
+        constexpr float kMarkerCode = 191.0f / 255.0f;
+
+        DWORD FloatBits(float f) { DWORD d; std::memcpy(&d, &f, sizeof d); return d; }
+
+        /// The token stream of a ps_2_0+ shader that writes oC0 but not oC1, with "mov oC1, cN.xxxx" and
+        /// "mov oC2, cN" appended and "def cN, 0, 0, 0, marker" put where the compiler puts its defs; cN is
+        /// the highest constant register no instruction reads. Empty when the shader cannot be patched
+        /// (below ps_2_0, relative constant addressing, no free register).
+        std::vector<DWORD> MarkingTwin(const DWORD* t, UINT bytes)
+        {
+            std::vector<DWORD> out;
+            const UINT n = bytes / 4;
+            if (n < 2 || (t[0] & 0xFFFF0000u) != 0xFFFF0000u) return out;
+            const DWORD major = (t[0] >> 8) & 0xFF;
+            if (major < 2) return out;
+            const UINT limit = major >= 3 ? 224 : 32;
+            std::vector<bool> used(256, false);
+            UINT end = 0, firstInstruction = 0;
+            for (UINT i = 1; i < n;)
+            {
+                const DWORD tok = t[i];
+                const DWORD op  = tok & 0xFFFF;
+                if (op == 0xFFFF) { end = i; break; }
+                if (op == 0xFFFE) { i += 1 + ((tok >> 16) & 0x7FFF); continue; }
+                if (!firstInstruction) firstInstruction = i;
+                const UINT len = (tok >> 24) & 0x0F;
+                if (i + len >= n) return out;
+                if (op == 0x51 || op == 0x30 || op == 0x2F)          // def, defi, defb: the dest only
+                {
+                    const DWORD d = t[i + 1];
+                    if ((((d >> 28) & 0x7) | ((d >> 8) & 0x18)) == 2) used[d & 0xFF] = true;
+                }
+                else if (op != 0x1F)                                  // dcl: a usage token, then the dest
+                    for (UINT k = 1; k <= len; ++k)
+                    {
+                        const DWORD p = t[i + k];
+                        if ((((p >> 28) & 0x7) | ((p >> 8) & 0x18)) != 2) continue;
+                        if (p & (1u << 13)) return out;              // c[a0 + n]: any register may be read
+                        used[p & 0xFF] = true;
+                    }
+                i += 1 + len;
+            }
+            if (!end || !firstInstruction) return out;
+            int reg = -1;
+            for (int r = int(limit) - 1; r >= 0 && reg < 0; --r)
+                if (!used[size_t(r)]) reg = r;
+            if (reg < 0) return out;
+            const DWORD c = DWORD(reg);
+            out.assign(t, t + firstInstruction);
+            out.insert(out.end(), { 0x05000051u, 0xA00F0000u | c, FloatBits(0.0f), FloatBits(0.0f), FloatBits(0.0f), FloatBits(kMarkerCode) });
+            out.insert(out.end(), t + firstInstruction, t + end);
+            out.insert(out.end(), { 0x02000001u, 0x800F0801u, 0xA0000000u | c,     // mov oC1, cN.xxxx
+                                    0x02000001u, 0x800F0802u, 0xA0E40000u | c,     // mov oC2, cN
+                                    0x0000FFFFu });
+            return out;
+        }
+
+        /// The marking twin of a shader that writes oC0 alone, made once; null when it cannot be made.
+        IDirect3DPixelShader9* TwinOf(IDirect3DDevice9* d, IDirect3DPixelShader9* ps)
+        {
+            UINT size = 0;
+            if (!ps || FAILED(ps->GetFunction(nullptr, &size)) || size < 8 || size >= (1u << 20)) return nullptr;
+            auto it = g_twins.find(ps);
+            if (it != g_twins.end())
+            {
+                if (it->second.size == size) return it->second.twin;
+                if (it->second.twin) it->second.twin->Release();
+                g_twins.erase(it);
+            }
+            IDirect3DPixelShader9* twin = nullptr;
+            std::vector<DWORD> code(size / 4);
+            if (SUCCEEDED(ps->GetFunction(code.data(), &size)))
+            {
+                const std::vector<DWORD> patched = MarkingTwin(code.data(), size);
+                if (!patched.empty() && FAILED(d->CreatePixelShader(patched.data(), &twin))) twin = nullptr;
+            }
+            if (g_twins.size() > 4096)
+            {
+                for (auto& [k, v] : g_twins) if (v.twin) v.twin->Release();
+                g_twins.clear();
+            }
+            g_twins.emplace(ps, Twin{ twin, size });
+            if (twin && ++g_twinsMade <= 64)
+                WLOG_INFO("mrt: pixel shader %p (%u bytes) writes no G-buffer (the rewrite misses it); bound as a twin that "
+                          "marks its pixels while it writes depth (%u such so far)", static_cast<void*>(ps), size, g_twinsMade);
+            return twin;
+        }
 
         /// The colour outputs a ps_2_0+ token stream writes, bit n for oCn.
         uint32_t WrittenOutputs(const DWORD* t, UINT bytes)
@@ -113,14 +222,16 @@ namespace wxl::runtime::mrt
         void UpdateMask(IDirect3DDevice9* d)
         {
             if (!g_active || !g_bound) return;
-            const DWORD want = ((g_psWrites & 2u) && !g_blend) ? 0xF : 0;
+            // A marking twin writes its marker only where it writes depth (a surface of the world).
+            const bool open = !g_blend && (!g_psTwin || g_zwrite);
+            const DWORD want = ((g_psWrites & 2u) && open) ? 0xF : 0;
             if (want != g_mask)
             {
                 g_mask = want;
                 g_origSetRenderState(d, kWriteMask1, want);
             }
             if (!g_target2) return;
-            const DWORD want2 = ((g_psWrites & 4u) && !g_blend) ? 0xF : 0;
+            const DWORD want2 = ((g_psWrites & 4u) && open) ? 0xF : 0;
             if (want2 != g_mask2)
             {
                 g_mask2 = want2;
@@ -173,17 +284,33 @@ namespace wxl::runtime::mrt
                 g_blend = value != 0;
                 UpdateMask(d);
             }
+            else if (state == D3DRS_ZENABLE || state == D3DRS_ZWRITEENABLE)
+            {
+                (state == D3DRS_ZENABLE ? g_zenable : g_zwriteState) = value;
+                g_zwrite = g_zenable != 0 && g_zwriteState != 0;
+                UpdateMask(d);
+            }
             return hr;
+        }
+
+        /// What to bind for ps during the world pass: its marking twin when it writes oC0 alone.
+        IDirect3DPixelShader9* Choose(IDirect3DDevice9* d, IDirect3DPixelShader9* ps)
+        {
+            g_psWrites = ShaderOutputs(ps);
+            g_psTwin = false;
+            if (!ps || (g_psWrites & 3u) != 1u) return ps;
+            IDirect3DPixelShader9* twin = TwinOf(d, ps);
+            if (!twin) return ps;
+            g_psWrites |= 6u;
+            g_psTwin = true;
+            return twin;
         }
 
         HRESULT __stdcall hkSetPixelShader(IDirect3DDevice9* d, IDirect3DPixelShader9* ps)
         {
-            const HRESULT hr = g_origSetPixelShader(d, ps);
-            if (g_active)
-            {
-                g_psWrites = ShaderOutputs(ps);
-                UpdateMask(d);
-            }
+            if (!g_active) return g_origSetPixelShader(d, ps);
+            const HRESULT hr = g_origSetPixelShader(d, Choose(d, ps));
+            UpdateMask(d);
             return hr;
         }
 
@@ -288,9 +415,17 @@ namespace wxl::runtime::mrt
         g_bound   = false;
         DWORD blend = 0;
         g_blend = SUCCEEDED(d->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend)) && blend;
+        if (FAILED(d->GetRenderState(D3DRS_ZENABLE, &g_zenable))) g_zenable = TRUE;
+        if (FAILED(d->GetRenderState(D3DRS_ZWRITEENABLE, &g_zwriteState))) g_zwriteState = TRUE;
+        g_zwrite = g_zenable != 0 && g_zwriteState != 0;
         IDirect3DPixelShader9* ps = nullptr;
-        if (SUCCEEDED(d->GetPixelShader(&ps)) && ps) { g_psWrites = ShaderOutputs(ps); ps->Release(); }
-        else g_psWrites = 0;
+        if (SUCCEEDED(d->GetPixelShader(&ps)) && ps)
+        {
+            IDirect3DPixelShader9* bind = Choose(d, ps);
+            if (bind != ps) g_origSetPixelShader(d, bind);
+            ps->Release();
+        }
+        else { g_psWrites = 0; g_psTwin = false; }
         Bind(d, true);
         if (albedoBound) *albedoBound = t2 != nullptr;
 

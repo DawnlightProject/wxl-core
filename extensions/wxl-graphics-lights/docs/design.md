@@ -313,10 +313,12 @@ Per pixel:
 the rewritten shaders. An opaque surface drawn with a shader the rewrite missed writes its depth but
 leaves the normal, albedo and material of whatever was drawn there before it (an interior wall over the
 terrain behind it). Lit with those, walls showed the mountain's edges and the next room's beams through
-them. On building and terrain pixels (never bent normals), a stored normal more than about 70 degrees
-from the normal the depth describes marks such a pixel: it is lit as a plain building with the depth's
-normal and a neutral albedo. The Material view shows these pixels in yellow; they name the shaders the
-rewrite still has to cover.
+them. The core now binds such a shader, during the world pass and while it writes depth, as a twin that
+writes the "no data" marker (`game/GBuffer.hpp`, kMarkerNoData: no normal, material code 191); the
+surfaces light a marked pixel as a plain building with the depth's normal and a neutral albedo. As a
+second guard for shaders the core cannot patch, on building and terrain pixels (never bent normals) a
+stored normal more than about 70 degrees from the depth's is treated the same way. The Material view
+shows both in yellow; the core's log lists the shaders it had to patch, which the rewrite should cover.
 
 **Not twice what the engine lights.** The engine already lights terrain, buildings and models with
 its own M2 lights (the carried torch, braziers, campfires), and a WMO light is baked into its

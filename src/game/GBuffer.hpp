@@ -49,6 +49,12 @@
  *   a   = material code v / 255: kind = v >> 6 (0 none, 1 model or grass, 2 building, 3 terrain),
  *         gloss = (v & 63) / 63 (the terrain's specular mask; 0 elsewhere)
  *
+ * The "no data" marker (kMarkerNoData). A shader the rewrite does not cover (it writes oC0 alone) would
+ * leave in both targets whatever was drawn at its pixels before it. During the world pass the core binds
+ * such a shader as a twin that writes render target 1 = 0 and render target 2 = (0, 0, 0, 191 / 255),
+ * but only while its draws write depth: a surface is there, the G-buffer holds nothing of it. Code 191
+ * (kind 2, gloss 63) is written by no rewritten shader; a reader takes the surface's normal from depth.
+ *
  * Light buffer (the older bls_normals.py rewrite only; bls_gbuffer.py writes no light code). During the world pass the rewritten shaders add min(albedo^2 * tex(s12, uv).rgb *
  * c30.x * fog, c30.y) to their colour in linear space (gamma 2: out = sqrt(colour^2 * c30.z + added)),
  * with uv = (dp4(P1, c26), dp4(P1, c27)) / dp4(P1, c29), P1 = (view-space position, 1), and only where
@@ -63,6 +69,7 @@
  */
 namespace wxl::game::gbuffer
 {
+    constexpr uint32_t kMarkerNoData      = 191; // render target 2's alpha * 255 for a surface without G-buffer data
     constexpr uint32_t kLightBufferSampler = 12;
     constexpr uint32_t kLightBufferRows    = 26;  // c26..c29
     constexpr uint32_t kLightBufferParams  = 30;  // c30.x = enable

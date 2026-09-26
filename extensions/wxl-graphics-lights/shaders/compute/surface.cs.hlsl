@@ -184,8 +184,16 @@ void main(uint3 id : SV_DispatchThreadID)
     // depth describes belongs to what was drawn there before (see DepthNormal). Models and grass are left
     // alone: grass cards carry upward normals on purpose. The stale pixel is lit as a plain building, with
     // its own normal and a neutral albedo, rather than with another surface's texture.
-    bool stale = false;
-    if (hasNormal && kind > 1.5)
+    // The core's marker for a surface drawn by a shader the rewrite misses (game/GBuffer.hpp,
+    // kMarkerNoData): no normal, material code 191. Its normal comes from depth, its albedo is neutral.
+    bool stale = !hasNormal && abs(code - 191.0) < 0.5;
+    if (stale)
+    {
+        n = DepthNormal(px, r);
+        kind = 2.0;
+        code = 128.0;
+    }
+    else if (hasNormal && kind > 1.5)
     {
         float3 geo = DepthNormal(px, r);
         if (dot(n, geo) < 0.35)
