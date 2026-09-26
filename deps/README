@@ -5,8 +5,17 @@ Contents:
   flatbuffers/  - FlexBuffers payloads for the IPC contract. Used by: host + DLL (ipc/).
                   Header-only for our use plus src/util.cpp compiled into the host.
   minhook/      - inline detour engine. Used by: DLL only (core/Hook). Wired with the DLL target.
+  vulkan-headers/ - the official Khronos Vulkan headers v1.3.290 (Apache-2.0 OR MIT, LICENSE.md).
+                  Headers only, on every extension's include path: the Vulkan side of
+                  wxl-graphics-extend (DXVK interop) and its consumers load every function at runtime.
   imgui/        - Dear ImGui v1.91.9b. Used by: DLL only (engine/ui), the in-game tuning panels.
                   Core + the DX9 and Win32 backends only; the demo window is not vendored. Sources
                   are listed explicitly in CMakeLists (WXL_IMGUI), not globbed.
+  dxc/          - the DirectX Shader Compiler, official release v1.9.2607 (dxc_2026_07_29.zip from
+                  github.com/microsoft/DirectXShaderCompiler; its LLVM, MIT and MS licences alongside). Build
+                  tool only: bin/x64/dxc.exe, dxcompiler.dll, dxil.dll compile wxl-graphics-fog's
+                  compute shaders to SPIR-V (-spirv -fspv-target-env=vulkan1.3). The binaries are
+                  not committed (*.exe, *.dll are ignored): unzip the release's bin/x64 here, or
+                  the build uses the committed extensions/wxl-graphics-fog/src/gpu/Spirv.gen.cpp.
 
 These are the only external dependencies.

@@ -16,11 +16,13 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "Panel.hpp"
+#include "../assets/Assets.hpp"
 #include "../core/Extension.hpp"
 #include "../frame/Scheduler.hpp"
 #include "../shaders/Compiler.hpp"
 #include "../targets/TargetPool.hpp"
 #include "../textures/Neutral.hpp"
+#include "../vulkan/Vulkan.hpp"
 
 #include <cstdarg>
 #include <cstddef>
@@ -63,7 +65,7 @@ namespace
     {
         static const struct { uint32_t bit; const char* word; } kWords[] = {
             { WXL_GFX_NEED_DEPTH, "depth" }, { WXL_GFX_NEED_NORMALS, "normals" },
-            { WXL_GFX_NEED_HDR, "hdr" },     { WXL_GFX_NEED_RUN, "run" },
+            { WXL_GFX_NEED_ALBEDO, "albedo" }, { WXL_GFX_NEED_HDR, "hdr" }, { WXL_GFX_NEED_RUN, "run" },
         };
         size_t n = 0;
         buf[0] = '\0';
@@ -130,6 +132,12 @@ namespace
         const char* status = shaders::Status();   // includes the compile / cache-hit counts
         if (status && status[0]) Text(status);
         if (Api()->UiButton("Clear shader cache")) shaders::ClearCache();
+
+        Heading("Vulkan (DXVK)");
+        wxl::gfx::vulkan::PanelSection();
+
+        Heading("Baked assets");
+        Text(wxl::gfx::assets::Status());
 
         Heading("Textures");
         uint32_t bakeMs = 0;

@@ -33,10 +33,13 @@ namespace wxl::gfx::frame::scene
     /// WXL_GFX_CAP_* bits; carries WXL_GFX_CAP_PROBED once Probe ran, 0 before.
     uint32_t Caps();
 
+    /// Whether the device binds three render targets at once (the albedo target beside the normals).
+    bool ThreeTargets();
+
     /// One line on the depth path for the panel and WXL_GfxStatus::depthStatus.
     const char* Status();
 
-    enum class Kind { Depth, Normals, Hdr, Count };
+    enum class Kind { Depth, Normals, Hdr, Albedo, Count };
 
     /**
      * @brief The level-0 surface of a kind's texture at width x height, creating or re-creating it

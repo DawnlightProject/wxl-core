@@ -28,8 +28,15 @@ namespace wxl::offsets::engine::mem
     // Free a block obtained from the allocator: (ptr, fileName, line, flags).
     constexpr uintptr_t kFree  = 0x0076E5A0;
 
+    // Resize a block: (ptr, size, fileName, line, flags) -> pointer, ret 0x14. A null ptr allocates,
+    // size 0 frees, flag 0x10 with a live ptr returns null without moving it.
+    constexpr uintptr_t kReAlloc = 0x0076E5E0;
+
+    // All three sit on the CRT heap (engine/Crt.hpp) with no header of their own: Alloc rounds the
+    // size up to 8, then calls malloc, or calloc under flag 8.
     using Mem_AllocFn = void*(__stdcall*)(uint32_t size, const char* file, int line, uint32_t flags);
     using Mem_FreeFn  = void(__stdcall*)(void* ptr, const char* file, int line, uint32_t flags);
+    using Mem_ReAllocFn = void*(__stdcall*)(void* ptr, uint32_t size, const char* file, int line, uint32_t flags);
 
     // --- OOM-ladder purge primitives (wxl-engine-reforged) ---------------------------------------
     // Neither of these reaches a currently-bound/in-use resource -- both only reclaim what the game

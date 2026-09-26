@@ -1,5 +1,6 @@
 // gbuffer: the contract between the world pass's extra targets, the rewritten engine shaders
-// (extensions/wxl-forever/tools/bls_normals.py) and whoever consumes them.
+// (extensions/wxl-graphics-lights/tools/bls_gbuffer.py; before it wxl-forever's bls_normals.py) and
+// whoever consumes them.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -23,24 +24,32 @@
 #include "offsets/engine/Shader.hpp"
 
 /**
- * @brief World-pass G-buffer: normals in render target 1 and last frame's light buffer read back by
- *        the engine's own materials.
+ * @brief World-pass G-buffer: normals in render target 1, albedo in render target 2, and the light
+ *        buffer the older rewrite read back.
  *
  * Targets. Supply them in OnWorldSceneBegin (WorldSceneBeginArgs): *normalTarget (A8R8G8B8, the
- * world target's size) and optionally *colorOverride (A16B16G16R16F). They come back in
- * OnWorldSceneEnd (WorldSceneEndArgs::normalTarget / sceneColor), unbound.
+ * world target's size), optionally *albedoTarget (A8R8G8B8, taken only with a normal target) and
+ * *colorOverride (A16B16G16R16F). They come back in OnWorldSceneEnd (WorldSceneEndArgs::normalTarget
+ * / albedoTarget / sceneColor), unbound. Both G-buffer targets are cleared to 0 before the pass and
+ * written only by opaque and alpha-tested draws (blending closes their write masks).
  *
- * Normal target encoding, written by the rewritten M2 (Combiners*), WMO (MapObj*) and grass
- * (DetailDoodad) pixel shaders, shadow tiers >= 1 only (extShadowQuality >= 1), opaque and
- * alpha-tested draws only:
+ * Normal target (render target 1), written by the rewritten M2 (Combiners*), WMO (MapObj*) and grass
+ * (DetailDoodad) pixel shaders at shadow tiers >= 1 (extShadowQuality >= 1), and by terrain once its
+ * vertex shader is rewritten to hand its view-space normal over (texcoord7):
  *   rgb = view-space normal * 0.5 + 0.5 (the engine's view space: view matrix from shadows::Get or
  *         camera::GetView, applied to camera-relative positions)
- *   a   = 0    nothing written (terrain, liquids, particles, blended draws, shadow tier 0)
+ *   a   = 0    nothing written (liquids, particles, blended draws, shadow tier 0)
  *         0.5  normal only
- *         1    normal, and the surface already added lightBuffer * albedo (skip it when applying)
- * Terrain never writes a normal: no view-space normal reaches its pixel shader.
+ *         1    normal, and the surface already added lightBuffer * albedo (the older rewrite only)
  *
- * Light buffer. During the world pass the rewritten shaders add min(albedo^2 * tex(s12, uv).rgb *
+ * Albedo target (render target 2), written by the same shaders:
+ *   rgb = the material's colour where it meets the vertex lighting: its textures after the
+ *         combiner's stages (Mod, Mod2x, the terrain's layer blend), before the lighting and the
+ *         engine's shadow factor, in the engine's gamma working space
+ *   a   = material code v / 255: kind = v >> 6 (0 none, 1 model or grass, 2 building, 3 terrain),
+ *         gloss = (v & 63) / 63 (the terrain's specular mask; 0 elsewhere)
+ *
+ * Light buffer (the older bls_normals.py rewrite only; bls_gbuffer.py writes no light code). During the world pass the rewritten shaders add min(albedo^2 * tex(s12, uv).rgb *
  * c30.x * fog, c30.y) to their colour in linear space (gamma 2: out = sqrt(colour^2 * c30.z + added)),
  * with uv = (dp4(P1, c26), dp4(P1, c27)) / dp4(P1, c29), P1 = (view-space position, 1), and only where
  * w > 1e-4, uv lies inside [0, 1] and the texel's alpha is 0.5 (the provider's marker); alpha 1 then.

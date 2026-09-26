@@ -1,0 +1,98 @@
+# wxl-graphics-shadow: every shadow of the render stack.
+# Copy to wxl-graphics-shadow.cfg beside the DLL and change what you need; an environment variable of the
+# same name wins. The values below are the defaults. The panel ("Graphics Shadow") edits them live.
+
+# Everything this extension draws. Off: surfaces and the fog are unshadowed by it, the engine keeps its own.
+WXL_GFX_SHADOW=1
+
+# --- Lamp shadow maps -------------------------------------------------------------------------------------
+# Cube maps for the most important lights, drawn by the core's omni maps (claimed here) and filtered into
+# EVSM moments: soft, stable, and one fetch per froxel for the fog.
+WXL_GFX_SHADOW_MAPS=1
+# Still lamps with a map (0..4): their still surroundings are drawn once, only moving bodies again.
+WXL_GFX_SHADOW_MAPS_STILL=4
+# Moving and carried lights with a map (0..2), the player's own torch first: all casters, every frame.
+WXL_GFX_SHADOW_MAPS_MOVING=2
+# Core face sizes (texels): a still lamp's static map, its units map, a moving light's map.
+WXL_GFX_SHADOW_MAPS_STATIC_FACE=512
+WXL_GFX_SHADOW_MAPS_UNIT_FACE=256
+WXL_GFX_SHADOW_MAPS_MOVING_FACE=512
+# Faces of still lamps redrawn per frame when the engine's still casters change (1..6).
+WXL_GFX_SHADOW_MAPS_REFRESH=2
+# Face size of the filtered atlas: 256 (64 MB) or 128 (16 MB).
+WXL_GFX_SHADOW_MAPS_ATLAS_FACE=256
+# Yards around a lamp whose casters (its own cage, post, bracket) cast nothing.
+WXL_GFX_SHADOW_MAPS_HOUSING=0.45
+# The same for a carried light: the torch and the hand holding it.
+WXL_GFX_SHADOW_MAPS_CARRIED_HOUSING=0.3
+# Yards around the carrier's capsule where its own light casts no shadow (the carrier is lit by it).
+WXL_GFX_SHADOW_MAPS_CARRIER_MARGIN=0.12
+# Penumbra per yard of source size, and extra blur in mip levels.
+WXL_GFX_SHADOW_MAPS_SOFTNESS=1.0
+WXL_GFX_SHADOW_MAPS_LOD_BIAS=0.0
+# EVSM: exponents, light bleeding reduction (0..0.9), minimum variance.
+WXL_GFX_SHADOW_EVSM_POSITIVE=40
+WXL_GFX_SHADOW_EVSM_NEGATIVE=8
+WXL_GFX_SHADOW_EVSM_BLEED=0.3
+WXL_GFX_SHADOW_EVSM_MIN_VARIANCE=0.0004
+# Receiver offset along its normal and slope bias, in texels of the map at the receiver.
+WXL_GFX_SHADOW_NORMAL_OFFSET=1.5
+WXL_GFX_SHADOW_SLOPE_BIAS=1.0
+
+# --- Slots ------------------------------------------------------------------------------------------------
+# 16 lights cast at once. A light keeps its slot at least HOLD seconds; slots and maps fade over FADE
+# seconds; a newcomer must be MARGIN times more important than a holder to take its place.
+WXL_GFX_SHADOW_SLOT_HOLD=1.0
+WXL_GFX_SHADOW_SLOT_FADE=0.5
+WXL_GFX_SHADOW_SLOT_MARGIN=1.25
+
+# --- Body capsules (lamps without a map) ----------------------------------------------------------------
+WXL_GFX_SHADOW_CAPSULES=1
+# Bodies this near the camera (the 32 nearest), radius per yard of height, penumbra scale.
+WXL_GFX_SHADOW_CAPSULES_RANGE=60
+WXL_GFX_SHADOW_CAPSULES_RADIUS=0.2
+WXL_GFX_SHADOW_CAPSULES_PENUMBRA=1.0
+
+# --- Sun and moon -----------------------------------------------------------------------------------------
+WXL_GFX_SHADOW_SUN=1
+# Read the engine's cascades (a 3 x 3 tent of bilinear comparisons).
+WXL_GFX_SHADOW_SUN_CASCADES=1
+# Render the cascades along a lower, truer sun (and the moon at night): the core's shadow light, claimed here.
+WXL_GFX_SHADOW_SUN_LOW=1
+WXL_GFX_SHADOW_MOON=1
+# The body's height times this (the engine uses 5), never under this many degrees (the engine's floor is 50).
+WXL_GFX_SHADOW_SUN_LIFT=1.6
+WXL_GFX_SHADOW_SUN_MIN_ELEVATION=12
+# Tent spacing in texels of the finest cascade, extra spacing at dusk, extra depth bias in yards.
+WXL_GFX_SHADOW_SUN_FILTER=1.0
+WXL_GFX_SHADOW_SUN_DUSK_SOFTNESS=1.0
+WXL_GFX_SHADOW_SUN_BIAS=0.0
+
+# --- The terrain ------------------------------------------------------------------------------------------
+# The land drawn into the engine's cascades (hills shadow objects and the fog near the player).
+WXL_GFX_SHADOW_TERRAIN_CASTER=1
+WXL_GFX_SHADOW_TERRAIN_CASTER_CASCADES=4
+WXL_GFX_SHADOW_TERRAIN_CASTER_BIAS=0.3
+WXL_GFX_SHADOW_TERRAIN_CASTER_DETAIL=0
+# The baked horizon maps (Textures\Forever\Horizon): the land's shadow at any distance.
+WXL_GFX_SHADOW_HORIZON=1
+WXL_GFX_SHADOW_HORIZON_STRENGTH=1.0
+WXL_GFX_SHADOW_HORIZON_PENUMBRA=2.5
+WXL_GFX_SHADOW_HORIZON_OCCLUDER=120
+
+# --- Contact shadows --------------------------------------------------------------------------------------
+WXL_GFX_SHADOW_CONTACT=1
+# Yards towards the sun or the moon; lamps that get one (0..4); yards towards a lamp at most.
+WXL_GFX_SHADOW_CONTACT_SUN=1.5
+WXL_GFX_SHADOW_CONTACT_SLOTS=4
+WXL_GFX_SHADOW_CONTACT_LAMP=1.0
+WXL_GFX_SHADOW_CONTACT_THICKNESS=0.6
+WXL_GFX_SHADOW_CONTACT_STRENGTH=1.0
+
+# --- Masks and debug --------------------------------------------------------------------------------------
+# Trace the surface masks at half resolution and upsample (cheaper, slightly softer at silhouettes).
+WXL_GFX_SHADOW_HALF_RES=0
+# Debug view at start: 0 none, 1 sun, 2 moon, 3 one slot, 4 every slot, 5 contact, 6 terrain, 7 cascades,
+# 8 capsules, 9 map atlas, 10 normals.
+WXL_GFX_SHADOW_VIEW=0
+WXL_GFX_SHADOW_TIMERS=1

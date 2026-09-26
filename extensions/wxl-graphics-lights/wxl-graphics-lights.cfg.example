@@ -1,0 +1,147 @@
+# wxl-graphics-lights.cfg -- wxl-graphics-lights user configuration.
+#
+# Location: Extensions\wxl-graphics-lights\wxl-graphics-lights.cfg (next to the DLL).
+# Format: KEY=value, one per line. '#' or ';' starts a comment. An environment variable of the same
+# name wins over this file. Booleans: 0/n/f = no, anything else = yes.
+#
+# Every key is shown COMMENTED with its default value: uncomment a line to take control of it. The
+# panel "Graphics Lights" (Light, Surfaces, Air, Gather, Cookies, Shadow maps, Debug) sets the same
+# values live; docs/design.md explains each part.
+
+# ============================================================================= HDR and the resolve
+# Lit surfaces and the HDR chain at all. Off, the service still publishes its lights for the fog.
+#WXL_GFX_LIGHTS_SURFACE=1
+# Draw the world into a 16-bit float image and map it to the screen once at the end. Off, the curve is
+# applied in the composite on the 8-bit image.
+#WXL_GFX_LIGHTS_HDR=1
+# Where the curve starts to bend bright light towards white (linear). Below it the image is exactly the
+# game's own.
+#WXL_GFX_LIGHTS_HDR_KNEE=0.6
+# The interim resolve's exposure: the whole image before the curve. 1 leaves the game's look untouched.
+# wxl-graphics-post takes this over once it claims the resolve.
+#WXL_GFX_LIGHTS_HDR_EXPOSURE=1.0
+# Blue-noise dither on the 8-bit screen.
+#WXL_GFX_LIGHTS_HDR_DITHER=1
+
+# ============================================================================= The light model
+# Every lamp's intensity, times this. 1: a torch lights the ground to the game's white at about two
+# yards and fades into the night by ten.
+#WXL_GFX_LIGHTS_GAIN=1.0
+# How much a colour temperature moves towards white (the eye's adaptation to warm light). 0 true
+# blackbody colours.
+#WXL_GFX_LIGHTS_ADAPTATION=0.35
+# The irradiance where a lamp's reach ends, smoothly (scene units). Lower carries light further.
+#WXL_GFX_LIGHTS_CUTOFF=0.01
+# Flicker strength: fires breathe and gutter, candles tremble, lanterns barely move. 0 steady.
+#WXL_GFX_LIGHTS_FLICKER=1.0
+# The soft core of a light a character holds (a torch in hand), yards: its carrier never flares.
+#WXL_GFX_LIGHTS_CARRIED_CORE=1.0
+# How much a flame's light runs whiter near its source.
+#WXL_GFX_LIGHTS_HOT_CORE=0.25
+# The widest reach any light may take, yards (surfaces, air and the current fog alike).
+#WXL_GFX_LIGHTS_MAX_RADIUS=30
+# One family's intensity, times this (families: CANDLE, CHANDELIER, TORCH, FIRE, CAMPFIRE, BRAZIER,
+# HEARTH, LANTERN, STREETLAMP, WALLLIGHT, GREENLAMP, ENGINE_FIRE, ENGINE_LAMP, GIVEN, TINT).
+#WXL_GFX_LIGHTS_INTENSITY_STREETLAMP=1.0
+#WXL_GFX_LIGHTS_INTENSITY_TORCH=1.0
+# The current fog's lamp halos take the families' colour temperature, at the brightness they always had.
+#WXL_GFX_LIGHTS_LEGACY_CHROMA=1
+# The current fog only: the cap near a lamp's source (times its colour) and the brightest channel it may
+# publish. The lit surfaces have no cap: the curve handles bright light.
+#WXL_GFX_LIGHTS_NEAR_CAP=2.5
+#WXL_GFX_LIGHTS_MAX_PEAK=3
+
+# ============================================================================= Gather
+# The game's own lights (model and building lights) and the model table's.
+#WXL_GFX_LIGHTS_GATHER_ENGINE=1
+#WXL_GFX_LIGHTS_GATHER_WMO=1
+#WXL_GFX_LIGHTS_GATHER_TABLE=1
+# How far around the camera lights are gathered, yards (up to 128, faded in and out over a second).
+#WXL_GFX_LIGHTS_GATHER_RADIUS=70
+# One light per fixture, and whether it takes the larger legacy reach of the two it merged.
+#WXL_GFX_LIGHTS_MERGE=1
+#WXL_GFX_LIGHTS_MERGE_REACH=1
+
+# ============================================================================= Rooms
+# Keep a lamp in its room; the share of it that reaches another floor of the building.
+#WXL_GFX_LIGHTS_ROOMS=1
+#WXL_GFX_LIGHTS_ROOM_LEAK=0.1
+
+# ============================================================================= Surfaces
+# Burley diffuse (0 Lambert), GGX specular strength, every roughness times this.
+#WXL_GFX_LIGHTS_SURFACE_BURLEY=1
+#WXL_GFX_LIGHTS_SURFACE_SPECULAR=1.0
+#WXL_GFX_LIGHTS_SURFACE_ROUGHNESS=1.0
+# Wet ground: upward-facing outdoor surfaces turn glossy and a little darker.
+#WXL_GFX_LIGHTS_SURFACE_WETNESS=0.0
+# The glow of the lamp heads (glass, flame), for bloom later.
+#WXL_GFX_LIGHTS_SURFACE_EMISSIVE=1.0
+# Share of the fog's extinction between a lamp and a surface.
+#WXL_GFX_LIGHTS_SURFACE_FOG_DIMS=1.0
+# An outdoor light reaching into a room; a room's light reaching outside every room.
+#WXL_GFX_LIGHTS_SURFACE_OUTDOOR_INDOORS=0.12
+#WXL_GFX_LIGHTS_SURFACE_INDOOR_OUTDOORS=0.2
+# The sun and moon shadow the game's own light lacks (from wxl-graphics-shadow), and how far the game's
+# cascade shadows are deepened.
+#WXL_GFX_LIGHTS_SURFACE_SUN=1
+#WXL_GFX_LIGHTS_SURFACE_SUN_DEEPEN=0.6
+
+# ============================================================================= The air (the lamp light field)
+# Compute the lamps' light in the air when the fog wants it or for the halo below.
+#WXL_GFX_LIGHTS_FIELD=1
+# wxl-graphics-shadow's point shadows in the air.
+#WXL_GFX_LIGHTS_FIELD_SHADOWS=1
+# Share of the fog's extinction between a lamp and the air it lights.
+#WXL_GFX_LIGHTS_FIELD_THINNING=1.0
+# The dual Henyey-Greenstein phase of the field's towards-the-eye image (the fog sets it itself).
+#WXL_GFX_LIGHTS_FIELD_PHASE_FORWARD=0.6
+#WXL_GFX_LIGHTS_FIELD_PHASE_BACK=-0.2
+#WXL_GFX_LIGHTS_FIELD_PHASE_BLEND=0.25
+# Without the fog: a thin even haze shows each lamp's halo. Its density per yard and its strength.
+#WXL_GFX_LIGHTS_HALO=1
+#WXL_GFX_LIGHTS_HALO_DENSITY=0.012
+#WXL_GFX_LIGHTS_HALO_STRENGTH=1.0
+
+# ============================================================================= Cookies
+# The baked shadow a lamp's own cage throws (Textures\Forever\Cookies).
+#WXL_GFX_LIGHTS_COOKIES_ENABLED=1
+#WXL_GFX_LIGHTS_COOKIES_STRENGTH=1.0
+# The least a pattern lets through in any direction.
+#WXL_GFX_LIGHTS_COOKIES_FLOOR=0.10
+# How much of its pattern a flame light takes (a flame is a volume, not a point).
+#WXL_GFX_LIGHTS_COOKIES_FLAME=0.35
+# How much of a tinted cookie's glass colour its light takes.
+#WXL_GFX_LIGHTS_COOKIES_TINT=1.0
+# Cookies resident at once (atlas cells), 4..64.
+#WXL_GFX_LIGHTS_COOKIES_BUDGET=32
+# How many cookie texels one pixel may cover, seen from its lamp, before the pattern gives way to its mean.
+#WXL_GFX_LIGHTS_COOKIES_PREFILTER=3.0
+# 0 off, 1 draw the atlas in a corner, 2 consumers show the cookie factor.
+#WXL_GFX_LIGHTS_COOKIES_DEBUG=0
+
+# ============================================================================= The legacy omni table
+# The core's four omni maps for the current fog's legacy table. While wxl-graphics-shadow is loaded it
+# owns the maps and these keys do nothing: this extension only reads them back.
+#WXL_GFX_LIGHTS_OMNI_SHADOWS=1
+#WXL_GFX_LIGHTS_OMNI_UNITS_FIRST=1
+#WXL_GFX_LIGHTS_OMNI_CARRIED=1
+#WXL_GFX_LIGHTS_OMNI_SELF=0.5
+#WXL_GFX_LIGHTS_OMNI_CARRIED_SELF=0.3
+#WXL_GFX_LIGHTS_OMNI_CARRIED_SKIP=1.0
+#WXL_GFX_LIGHTS_OMNI_FACE_SIZE=512
+#WXL_GFX_LIGHTS_OMNI_REFRESH=3
+
+# ============================================================================= Debug
+# A debug view: 0 off, 1 albedo, 2 normals, 3 material, 4 light only, 5 clusters, 6 shadow slots,
+# 7 sun factor, 8 cookies, 9 rooms, 10 a field slice, 11 the field along each ray.
+#WXL_GFX_LIGHTS_VIEW=0
+# The light markers overlay: every light near the camera, with its reach.
+#WXL_GFX_LIGHTS_OVERLAY=0
+#WXL_GFX_LIGHTS_OVERLAY_WMO=0
+#WXL_GFX_LIGHTS_OVERLAY_TABLE=0
+#WXL_GFX_LIGHTS_OVERLAY_THROUGH=1
+#WXL_GFX_LIGHTS_OVERLAY_RADIUS=120
+#WXL_GFX_LIGHTS_OVERLAY_LOG_STATS=0
+#WXL_GFX_LIGHTS_OVERLAY_MISSILES=0
+#WXL_GFX_LIGHTS_OVERLAY_EMITTERS=0
+#WXL_GFX_LIGHTS_OVERLAY_EMITTER_RADIUS=40

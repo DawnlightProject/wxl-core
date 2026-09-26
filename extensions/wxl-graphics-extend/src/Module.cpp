@@ -15,6 +15,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "core/Extension.hpp"
+#include "assets/Assets.hpp"
 #include "frame/Scheduler.hpp"
 #include "io/ClientFile.hpp"
 #include "shaders/Bls.hpp"
@@ -24,6 +25,7 @@
 #include "textures/Dds.hpp"
 #include "textures/Neutral.hpp"
 #include "ui/Panel.hpp"
+#include "vulkan/Vulkan.hpp"
 
 #include "wxl/EventScript.hpp"
 #include "wxl/GraphicsExtendApi.h"
@@ -225,6 +227,54 @@ namespace
         gfx::fullscreen::Draw(device, width, height);
     }
 
+    // --- baked assets ---------------------------------------------------------------------------
+
+    const WXL_GfxManifest* __cdecl ApiManifestLoad(const char* folder, const char* file)
+    {
+        return Guarded("ManifestLoad", static_cast<const WXL_GfxManifest*>(nullptr),
+                       [&] { return gfx::assets::ManifestLoad(folder, file); });
+    }
+
+    int __cdecl ApiManifestVersion(const WXL_GfxManifest* m) { return gfx::assets::ManifestVersion(m); }
+    int __cdecl ApiManifestCount(const WXL_GfxManifest* m) { return gfx::assets::ManifestCount(m); }
+
+    int __cdecl ApiManifestColumn(const WXL_GfxManifest* m, const char* name)
+    {
+        return Guarded("ManifestColumn", -1, [&] { return gfx::assets::ManifestColumn(m, name); });
+    }
+
+    int __cdecl ApiManifestFind(const WXL_GfxManifest* m, const char* key)
+    {
+        return Guarded("ManifestFind", -1, [&] { return gfx::assets::ManifestFind(m, key); });
+    }
+
+    const char* __cdecl ApiManifestField(const WXL_GfxManifest* m, int row, int column)
+    {
+        return gfx::assets::ManifestField(m, row, column);
+    }
+
+    float __cdecl ApiManifestNumber(const WXL_GfxManifest* m, int row, int column, float fallback)
+    {
+        return gfx::assets::ManifestNumber(m, row, column, fallback);
+    }
+
+    const char* __cdecl ApiManifestFolder(const WXL_GfxManifest* m) { return gfx::assets::ManifestFolder(m); }
+
+    uint32_t __cdecl ApiAssetRequest(const char* path, int priority, uint32_t want)
+    {
+        return Guarded("AssetRequest", 0u, [&] { return gfx::assets::Request(path, priority, want); });
+    }
+
+    void* __cdecl ApiAssetTexture(uint32_t id) { return gfx::assets::Texture(id); }
+
+    const void* __cdecl ApiAssetBytes(uint32_t id, size_t* size) { return gfx::assets::Bytes(id, size); }
+
+    uint32_t __cdecl ApiAssetState(uint32_t id) { return gfx::assets::State(id); }
+
+    void __cdecl ApiAssetRelease(uint32_t id) { gfx::assets::Release(id); }
+
+    const char* __cdecl ApiAssetStatus(void) { return gfx::assets::Status(); }
+
     const WXL_GraphicsExtendApi kApi = {
         .structSize             = sizeof(WXL_GraphicsExtendApi),
         .apiVersion             = WXL_GRAPHICS_EXTEND_API_VERSION,
@@ -253,6 +303,20 @@ namespace
         .ClearShaderCache       = &ApiClearShaderCache,
         .FullscreenVertexShader = &ApiFullscreenVertexShader,
         .DrawFullscreen         = &ApiDrawFullscreen,
+        .ManifestLoad           = &ApiManifestLoad,
+        .ManifestVersion        = &ApiManifestVersion,
+        .ManifestCount          = &ApiManifestCount,
+        .ManifestColumn         = &ApiManifestColumn,
+        .ManifestFind           = &ApiManifestFind,
+        .ManifestField          = &ApiManifestField,
+        .ManifestNumber         = &ApiManifestNumber,
+        .ManifestFolder         = &ApiManifestFolder,
+        .AssetRequest           = &ApiAssetRequest,
+        .AssetTexture           = &ApiAssetTexture,
+        .AssetBytes             = &ApiAssetBytes,
+        .AssetState             = &ApiAssetState,
+        .AssetRelease           = &ApiAssetRelease,
+        .AssetStatus            = &ApiAssetStatus,
     };
 
     /// DEFAULT-pool resources go before the engine resets the device; each module re-creates its own
@@ -260,13 +324,25 @@ namespace
     class Lifecycle final : public wxl::ext::EventScript
     {
     public:
-        Lifecycle() { on<&Lifecycle::OnDeviceLost>(ev::Event::OnDeviceLost); }
+        Lifecycle()
+        {
+            on<&Lifecycle::OnDeviceLost>(ev::Event::OnDeviceLost);
+            on<&Lifecycle::OnEndScene>(ev::Event::OnEndScene);
+        }
 
         void OnDeviceLost(const ev::DeviceResetArgs&)
         {
+            gfx::vulkan::OnDeviceLost();
             gfx::frame::OnDeviceLost();
             gfx::targets::OnDeviceLost();
+            gfx::assets::OnDeviceLost();
         }
+
+        /// Streams baked assets: finished reads become textures a few at a time, on the render thread.
+        void OnEndScene(const ev::EndSceneArgs& a) { gfx::assets::Pump(a.device, ++frames_); }
+
+    private:
+        uint32_t frames_ = 0;
     };
 }
 
@@ -292,6 +368,8 @@ int __cdecl WXL_Load(const WXL_Api* api)
     wxl::ext::EventScript::Bind(api);
 
     gfx::io::Install();
+    gfx::assets::Install();
+    gfx::vulkan::Install();
     gfx::frame::Install();
     static Lifecycle lifecycle;
     gfx::ui::Install();
@@ -300,8 +378,12 @@ int __cdecl WXL_Load(const WXL_Api* api)
     // earlier find it on their next lookup (include/wxl/gfx/Client.hpp retries).
     api->PublishInterface(WXL_GRAPHICS_EXTEND_API_NAME, WXL_GRAPHICS_EXTEND_API_VERSION,
                           const_cast<WXL_GraphicsExtendApi*>(&kApi));
+    // Always published: its Available() says whether DXVK answered on this device.
+    api->PublishInterface(WXL_GRAPHICS_VULKAN_API_NAME, WXL_GRAPHICS_VULKAN_API_VERSION,
+                          const_cast<WXL_GfxVulkanApi*>(gfx::vulkan::Table()));
 
-    api->Log(WXL_LOG_INFO, gfx::kTag, "ready: published %s v%d (depth, g-buffer, hdr, passes, targets, dds, bls, shaders)",
-             WXL_GRAPHICS_EXTEND_API_NAME, WXL_GRAPHICS_EXTEND_API_VERSION);
+    api->Log(WXL_LOG_INFO, gfx::kTag, "ready: published %s v%d and %s v%d (depth, g-buffer, hdr, passes, targets, dds, bls, shaders, assets, vulkan)",
+             WXL_GRAPHICS_EXTEND_API_NAME, WXL_GRAPHICS_EXTEND_API_VERSION, WXL_GRAPHICS_VULKAN_API_NAME,
+             WXL_GRAPHICS_VULKAN_API_VERSION);
     return 1;
 }

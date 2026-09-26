@@ -19,9 +19,11 @@
 #include "engine/hook/Hook.hpp"
 #include "engine/hook/Registry.hpp"
 #include "engine/storage/StorageHook.hpp"
+#include "engine/storage/HostStorage.hpp"
 #include "common/Log.hpp"
 #include "game/Gx.hpp"
 #include "runtime/Extensions.hpp"
+#include "runtime/host/HostClient.hpp"
 
 /**
  * @brief IAT anchor; the patcher imports this symbol so the loader maps the DLL.
@@ -43,7 +45,8 @@ namespace
      */
     DWORD WINAPI MainThread(LPVOID)
     {
-        wxl::runtime::storage::Install();
+        // Usually already running: the archive layer starts it at the client's first mount.
+        wxl::host::Start();
 
         // Wait for the graphics device (and the window) before installing detours that publish the
         // events runtime scripts subscribed to at load time.
@@ -80,6 +83,11 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
         // Arm the archive-mount safety nets now, on the loader thread, before the client builds its
         // archive set: the deferred main thread below is raced past by the client's startup.
         wxl::runtime::storage::InstallArchiveGuard();
+
+        // The file-open chain goes live at boot: its head must be registered before, and wxl-host serves
+        // the client's archives from the first mount on.
+        wxl::runtime::storage::Install();
+        wxl::runtime::storage::hosted::Install();
 
         // Only the detour is armed here: LoadLibrary under the loader lock is a deadlock, so the
         // extensions themselves load from the engine-init seam, which the client reaches on its own

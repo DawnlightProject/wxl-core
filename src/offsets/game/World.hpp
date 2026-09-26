@@ -319,6 +319,9 @@ namespace wxl::offsets::game::world
     /// The top-level "which area am I in" resolver - a hook here can inject areas that do not exist in
     /// the client's AreaTable. __cdecl, caller-cleaned.
     constexpr uintptr_t kMapAreaIdQuery                    = 0x00782560;
+    /// The player's zone (u32 area id), written by CGGameUI::NewZoneFeedback; a new value raises
+    /// ZONE_CHANGED_NEW_AREA. 0 before the first zone of a session.
+    constexpr uintptr_t kZoneId                            = 0x00BD080C;
 
     // Async file-read queues
     /// Registers a completion/status observer on the engine's own queue, which is cheaper and safer

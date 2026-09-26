@@ -1,5 +1,5 @@
-// wxl-graphics-extend: the world pass's shared textures (INTZ depth, G-buffer normals, HDR colour)
-// and the device facts they depend on.
+// wxl-graphics-extend: the world pass's shared textures (INTZ depth, G-buffer normals and albedo,
+// HDR colour) and the device facts they depend on.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -40,7 +40,9 @@ namespace
         { "INTZ depth",    kIntz,                D3DUSAGE_DEPTHSTENCIL },
         { "normal target", D3DFMT_A8R8G8B8,      D3DUSAGE_RENDERTARGET },
         { "HDR colour",    D3DFMT_A16B16G16R16F, D3DUSAGE_RENDERTARGET },
+        { "albedo target", D3DFMT_A8R8G8B8,      D3DUSAGE_RENDERTARGET },
     };
+    static_assert(sizeof kSpecs / sizeof kSpecs[0] == size_t(scene::Kind::Count), "one spec per kind");
 
     struct Target
     {
@@ -52,6 +54,7 @@ namespace
 
     Target   g_targets[static_cast<int>(scene::Kind::Count)];
     uint32_t g_caps = 0;
+    bool     g_targets3 = false;   // three simultaneous render targets: the albedo target fits
     char     g_status[256] = "not probed yet (enter the world)";
 
     void ReleaseTarget(Target& t)
@@ -80,6 +83,7 @@ namespace wxl::gfx::frame::scene
 
         D3DCAPS9 caps{};
         const bool mrt = SUCCEEDED(dev->GetDeviceCaps(&caps)) && caps.NumSimultaneousRTs >= 2;
+        g_targets3 = mrt && caps.NumSimultaneousRTs >= 3;
 
         HRESULT intz = E_FAIL, fp16 = E_FAIL, fp16Blend = E_FAIL;
         IDirect3D9* d3d = nullptr;
@@ -133,6 +137,8 @@ namespace wxl::gfx::frame::scene
     }
 
     uint32_t Caps() { return g_caps; }
+
+    bool ThreeTargets() { return g_targets3; }
 
     const char* Status() { return g_status; }
 
@@ -195,6 +201,7 @@ namespace wxl::gfx::frame::scene
             t.refused = false;
         }
         g_caps = 0;
+        g_targets3 = false;
         std::snprintf(g_status, sizeof g_status, "not probed yet (enter the world)");
     }
 }

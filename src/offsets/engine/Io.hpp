@@ -69,6 +69,51 @@ namespace wxl::offsets::engine::io
     // Open flag: load the whole file into the handle buffer.
     constexpr uint32_t  kOpenWholeFile = 0x20000;
 
+    // --- the archive layer, as wxl-host replaces it (docs/host.md). Conventions read from each `ret`. ---
+
+    // SFile::OpenArchive: the SFile2 wrapper around kMopaqOpenArchive (allocates the 8-byte SArchive
+    // {kind, mopaq handle}). The only caller whose mounts wxl-host takes over: the survey and patch-download
+    // paths call kMopaqOpenArchive from elsewhere and keep a native archive.
+    constexpr uintptr_t kSFileOpenArchive    = 0x00421950;
+    constexpr uint32_t  kSFileOpenArchiveLen = 0x98;
+
+    // Opens an archive relative to a parent archive (the per-patch "alternate" view). A folder parent joins
+    // the path and mounts what is there; an MPQ parent yields a view of its files under "<name>\". __cdecl.
+    constexpr uintptr_t kMopaqNestedOpen = 0x0045C5C0;
+    using MopaqNestedOpenFn = char(__cdecl*)(void* parent, const char* name, int priority, void** out);
+
+    // Blizzard::Mopaq::SFileCloseArchive(handle). __cdecl.
+    constexpr uintptr_t kMopaqCloseArchive = 0x00458980;
+    using MopaqCloseArchiveFn = char(__cdecl*)(void* archive);
+
+    // System_SFile2::FindFile(name, outName, outCap, flags, &kind, &archive): the local-file map first when
+    // (flags | kDirectAccessFlags) & 3, then the archive search. Returns non-zero when found; kind 0 is a
+    // loose file on disk, 3 an archive member. __cdecl.
+    constexpr uintptr_t kFindFile = 0x00424780;
+    using FindFileFn = int(__cdecl*)(const char* name, char* outName, uint32_t outCap, uint32_t flags,
+                                     uint32_t* kind, void** archive);
+
+    // SFile::FileGetIsLocalAmount(name, &local, &total): adds a file's local and total byte counts (64-bit
+    // each) for the load-progress bars. __stdcall.
+    constexpr uintptr_t kFileGetIsLocalAmount = 0x004217E0;
+    using FileGetIsLocalAmountFn = void(__stdcall*)(const char* name, uint32_t* local64, uint32_t* total64);
+
+    // Archive-only existence test by name (the loading-screen picker's wide-screen probe). Non-zero when
+    // found. __stdcall.
+    constexpr uintptr_t kArchiveFileExists = 0x00421FC0;
+    using ArchiveFileExistsFn = int(__stdcall*)(const char* name);
+
+    // Globals the archive layer reports through.
+    constexpr uintptr_t kMopaqLastError    = 0x00B32508; // set to 2 (not found) or 0x6C (not an archive)
+    constexpr uintptr_t kSErrLastError     = 0x00CAD834; // SErrSetLastError's value (Game::GetLastErrorCode)
+    constexpr uintptr_t kDirectAccessFlags = 0x00AB7B80; // OR-ed into every lookup's flags
+    constexpr uintptr_t kArchiveSlots      = 0x00B2FA40; // SArchive** the boot mount fills, in slot order
+    constexpr uintptr_t kArchiveSlotCount  = 0x00B2FA3C;
+
+    // An SFile file handle's kind at +0x00: 5 is a buffered whole-file handle (+0x14 size, +0x18 bytes,
+    // +0x1c position), the layout wxl-host's handles use.
+    constexpr uint32_t kHandleKindBuffered = 5;
+
     using Storage_FileOpenFn  = int(__stdcall*)(void* archive, const char* name, uint32_t flags, void** out);
     using Storage_FileSizeFn  = uint32_t(__stdcall*)(void* handle, uint32_t* sizeHigh);
     using Storage_FileReadFn  = int(__stdcall*)(void* handle, void* dst, uint32_t len, uint32_t* read, void* ovl, uint32_t unk);

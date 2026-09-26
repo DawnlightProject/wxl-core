@@ -8,7 +8,7 @@ extension needs and hands them to all of them through one service:
 | Tool | What a consumer gets |
 |---|---|
 | **INTZ depth** | The world's depth as a texture it can sample after the world pass. |
-| **G-buffer** | The view-space normals the engine's rewritten materials write as render target 1. |
+| **G-buffer** | The view-space normals and the albedo the engine's rewritten materials write as render targets 1 and 2. |
 | **HDR colour** | The world drawn into an FP16 target, which a pass later tonemaps to the back buffer. |
 | **Engine light buffer** | The texture and constants the rewritten materials add during the world pass, bound and unbound for you. |
 | **Pass scheduler** | Ordered passes after the world pass, a shared per-frame camera, and GPU time per pass. |
@@ -18,7 +18,9 @@ extension needs and hands them to all of them through one service:
 | **BLS** | Read and write the client's shader container. |
 | **Shaders** | HLSL compiled with `d3dcompiler_47`, cached in memory and on disk, plus a built-in HLSL library. |
 | **Full-screen passes** | A pass-through `vs_3_0` and a clip-space quad. |
-| **C++ helpers** | `StateGuard`, samplers, blend presets, matrices, GPU timer (header-only, in `include/wxl/gfx/`). |
+| **Baked assets** | Manifests (the CSV `5.tools/forever-bake` writes) and files streamed on a worker thread within a memory budget. |
+| **Vulkan (DXVK)** | On DXVK: the Vulkan device behind the D3D9 one, the world's targets as Vulkan images, and one compute block per frame. |
+| **C++ helpers** | `StateGuard`, samplers, blend presets, matrices, GPU timer, Vulkan dispatch, panel helpers (header-only, in `include/wxl/gfx/`). |
 
 It is the shared, reusable version of what `wxl-forever` grew in its `core/` folder: `SceneDepth`,
 `Passes`, `Dds`, `Bls`, `ShaderLibrary`, `RenderUtil`, `GpuTimer`, `Matrix` and `BlueNoise`.
@@ -127,6 +129,71 @@ precision far from the map origin.
 - **Blue noise is baked on first request** (a fraction of a second on a worker thread): ask for it
   every frame and use a fallback while it returns null. Nothing is baked if nobody asks.
 
+## Vulkan compute through DXVK
+
+The contract is `include/wxl/GraphicsVulkanApi.h`, published as `wxl.graphics-extend.vulkan`. When the
+client runs on DXVK, which translates its D3D9 into Vulkan, the service finds DXVK's interop
+interface. It then lets extensions run Vulkan compute on the same device, the same queue and the
+same images the client draws with. That removes the shader model 3 limits:
+- real 3D textures;
+- storage images and buffers;
+- no register or sampler ceiling.
+
+On native D3D9, `Available()` is 0 and every compute pass stays inert, at no cost.
+
+- **Choosing DXVK.** This extension ships DXVK 3.1.1 (`dxvk/`: the 32-bit `d3d9.dll`, its
+  `dxvk.conf` and licence), deployed to `Extensions\wxl-graphics-extend\dxvk\`. Set
+  `WXL_D3D9_BACKEND=dxvk` in `WarcraftXL.cfg`; `WXL_DXVK_PATH` names another `d3d9.dll`. The proxy
+  loads it and falls back to the system D3D9 if it cannot. Under Wine with DXVK installed as the
+  system `d3d9`, nothing is needed. The interop interfaces are the same in DXVK 2.7.1 and 3.1.1;
+  3.x enables more of what compute uses (see Capabilities).
+- **One block per frame.** Compute passes (`AddComputePass`) join the scheduler: their wants are
+  polled with the others', so the INTZ depth, the G-buffer and the HDR target are supplied for them
+  too. Once the world is drawn, the service does the following, whatever the number of passes:
+  1. It has DXVK end its render pass for good, which returns every image to the layout the interop
+     reports, and flushes the D3D9 work. This is the frame's one flush. It comes before any import
+     because DXVK may move an image to new memory at a flush.
+  2. It records every wanting compute pass, in order, into one command buffer.
+  3. It submits on DXVK's own queue, behind that work.
+
+  Every D3D9 pass drawn afterwards can use the results. A record callback records Vulkan only: a
+  D3D9 draw, copy or upload made from one reaches the GPU after the block.
+- **Images.** Images the service creates (`CreateImage`) always stay in `VK_IMAGE_LAYOUT_GENERAL`, so
+  a pass only orders its accesses with `CmdBarrier` and never transitions them. D3D9 textures are
+  imported per block (`ImportTexture`) and handed back to DXVK in its own layout.
+  - A D3D9 pass reads a compute result through a D3D9 texture filled by `CopyToTexture`. Every D3D9
+    texture can be a copy destination on DXVK 2.7.1 and 3.1.1 alike, so no version-specific interop
+    call is needed.
+  - A D3D9 texture a compute pass reads must already hold its data on the GPU: DEFAULT pool, filled
+    by rendering or `UpdateTexture`.
+- **Per-frame memory.** Uniform and staging rings, descriptor sets and timestamps all rotate over
+  three frames in flight.
+- **Helpers.** `include/wxl/gfx/Vk.hpp` loads the device functions a pass records with, and adds a
+  descriptor-set writer and `GetCaps`. SPIR-V is compiled offline and embedded in the consumer, with
+  DXC: `-spirv -T cs_6_0 -fspv-target-env=vulkan1.3` (SPIR-V 1.6). A module newer than the device
+  accepts is refused with a reason rather than created.
+- **Capabilities.** DXVK creates a Vulkan 1.3 device, even on a 1.4 driver, with the features it
+  needs itself. Vulkan cannot report what a device was created with, so `GetCaps` gives two sets:
+  - `enabled`: the hardware's support narrowed to what the running DXVK generation turns on. It
+    reads that generation from the factory (`ID3D9VkExtInterface` answers there since 3.0).
+  - `supported`: the hardware's support alone.
+
+  `GetCaps` also gives the usable Vulkan and SPIR-V versions, and the subgroup size and operations
+  that the SM6 wave intrinsics map to. `FormatFeatures` says, format by format, whether a storage
+  image may be declared Unknown. The same facts are logged once per device and shown in the panel.
+
+## Baked assets
+
+A section of the main table, generalised from `wxl-forever`'s `core/BakedAssets`:
+- `ManifestLoad(folder, file)` reads a bake manifest.
+- `AssetRequest(path, priority, want)` streams a file as:
+  - a MANAGED texture;
+  - raw bytes;
+  - a DEFAULT-pool texture a compute pass can import.
+- Reads run on a worker thread. The service creates the textures a few per frame, and evicts the
+  least recently used over the budget (`WXL_GFX_ASSET_BUDGET_MB`).
+- A missing file never fails a consumer: it just stays null.
+
 ## The HLSL library
 
 `#include "wxl/gfx/<file>.hlsli"` in any program compiled through `CompileShader`,
@@ -138,7 +205,7 @@ precision far from the map origin.
 |---|---|
 | `common.hlsli` | `WxlScreenUv` (UV from `VPOS`, D3D9 pixel centres), `WxlUvToNdc` / `WxlNdcToUv`, `WxlDp4Rows` (the dp4 form of `matrix::Columns`), `WxlLuminance`, `WxlSafeRcp`. |
 | `depth.hlsli` | `WxlDepthToNdc`, `WxlDepthIsSky`, `WxlLinearDepth`, `WxlReconstructRel`, `WxlReprojectClip` / `WxlReprojectUv`. |
-| `gbuffer.hlsli` | `WxlGBufferNormal`, `WxlGBufferHasNormal`, `WxlGBufferEngineLit` (the alpha markers of `src/game/GBuffer.hpp`). |
+| `gbuffer.hlsli` | `WxlGBufferNormal`, `WxlGBufferHasNormal`, `WxlGBufferEngineLit` (the alpha markers of `src/game/GBuffer.hpp`), `WxlGBufferKind`, `WxlGBufferGloss` (the albedo target's material code). |
 | `color.hlsli` | Exact sRGB, the engine's gamma 2, `WxlTonemapAces` / `Reinhard` / `ReinhardWhite` / `Uncharted2`, `WxlDither`. |
 | `noise.hlsli` | `WxlBlueNoise` (the service's tile with a per-frame R2 offset), `WxlInterleavedGradientNoise`, `WxlR2`. |
 
@@ -163,9 +230,13 @@ environment variable of the same name wins.
 |---|---|---|
 | `WXL_GFX_DEPTH` | 1 | Allow the INTZ depth redirect. |
 | `WXL_GFX_NORMALS` | 1 | Allow the G-buffer normal target. |
+| `WXL_GFX_ALBEDO` | 1 | Allow the G-buffer albedo target (`WXL_GFX_NEED_ALBEDO`, render target 2 beside the normals). |
 | `WXL_GFX_HDR` | 1 | Allow the FP16 world target. |
 | `WXL_GFX_PROFILE` | 1 | Time every pass on the GPU (timestamp queries, read a few frames late). |
 | `WXL_GFX_SHADER_DISK_CACHE` | 1 | Keep compiled shaders on disk. |
+| `WXL_GFX_VULKAN` | 1 | Expose DXVK's Vulkan device (compute passes). |
+| `WXL_GFX_ASSET_BUDGET_MB` | 64 | Memory resident baked files may hold. |
+| `WXL_GFX_ASSET_ASYNC` | 1 | Read baked files on a worker thread. |
 
 The overlay panel **Graphics Extend** shows the device facts, what the passes asked for and got, the
 GPU time of each pass, the render targets and the shader cache.
@@ -189,7 +260,9 @@ one to one onto this API) removes both limits and its duplicated code.
 
 ```
 include/wxl/GraphicsExtendApi.h      the C ABI contract (core include dir, like every service)
-include/wxl/gfx/                     header-only C++ helpers: Client, RenderState, Matrix, GpuTimer
+include/wxl/GraphicsVulkanApi.h      the Vulkan side (DXVK interop, compute block)
+include/wxl/gfx/                     header-only C++ helpers: Client, RenderState, Matrix, GpuTimer, Vk, Ui
+deps/vulkan-headers/                 the official Vulkan headers (headers only; nothing links vulkan-1)
 extensions/wxl-graphics-extend/
 ├── src/Module.cpp                   entry points, the service table, device lifecycle
 ├── src/frame/                       pass scheduler, world pass targets, camera, light buffer
@@ -197,7 +270,10 @@ extensions/wxl-graphics-extend/
 ├── src/textures/                    DDS, neutral textures, blue noise
 ├── src/io/                          client file reads (archives, then loose)
 ├── src/shaders/                     compiler + caches, BLS, full-screen VS
+├── src/assets/                      baked assets: manifests, streaming, budget
+├── src/vulkan/                      DXVK interop, capabilities, compute block, images, pipelines
 ├── src/ui/                          overlay panel
+├── dxvk/                            DXVK 3.1.1: 32-bit d3d9.dll, dxvk.conf, licence (deployed beside the DLL)
 ├── shaders/wxl/gfx/                 the built-in HLSL library (embedded in the DLL)
 └── cmake/EmbedFiles.cmake           embeds the library (shared.cmake wires it into the build)
 ```

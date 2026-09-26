@@ -135,8 +135,12 @@ namespace wxl::events
      *        by now; null otherwise). The world then never reached the back buffer: a subscriber must
      *        write it (tonemap) during this event and set *colorResolved = 1, or the core copies the
      *        override across itself (a plain StretchRect, no tonemap). colorResolved is never null.
+     *
+     *        albedoTarget is the render-target 2 surface a Begin subscriber supplied, when the core bound
+     *        it beside normalTarget (cleared to 0, written by the shaders that output oC2); null otherwise.
      */
-    struct WorldSceneEndArgs  { void* device; void* sceneDepth; void* normalTarget; void* sceneColor; int* colorResolved; };
+    struct WorldSceneEndArgs  { void* device; void* sceneDepth; void* normalTarget; void* sceneColor; int* colorResolved;
+                                void* albedoTarget; };
     /**
      * @brief Args for OnWorldSceneBegin: the world pass is about to draw.
      *
@@ -161,8 +165,13 @@ namespace wxl::events
      *        A16B16G16R16F, the back buffer's size and multisample type). The core then runs the whole
      *        world pass into it instead of the back buffer, the way depthOverride works, and hands it
      *        back in OnWorldSceneEnd, where the subscriber must resolve it to the back buffer. Never null.
+     *
+     *        albedoTarget: a second G-buffer surface (A8R8G8B8, same rules as normalTarget), bound as render
+     *        target 2 and written only by pixel shaders that output oC2 with blending off. Used only
+     *        together with a normalTarget. Never null, starts null.
      */
-    struct WorldSceneBeginArgs { void* device; void* sceneDepth; void** depthOverride; void** normalTarget; void** colorOverride; };
+    struct WorldSceneBeginArgs { void* device; void* sceneDepth; void** depthOverride; void** normalTarget; void** colorOverride;
+                                 void** albedoTarget; };
     /**
      * @brief Args for OnLiquidRender, fired before the native liquid pass draws. passType is 0 for the
      *        main pass, 1 for the secondary; instanceCount is the visible liquid instances in this pass;

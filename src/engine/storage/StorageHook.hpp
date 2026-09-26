@@ -36,11 +36,18 @@ namespace wxl::runtime::storage
      * @brief Hooks the client archive file-I/O primitives so client providers and transforms can
      *        participate (see RegisterClientProvider / RegisterClientTransform).
      *
-     * Every archive read otherwise runs exactly as stock: real archives (named or loose-directory,
-     * including a Patch-* the client's own patch-name scan finds) mount and read natively. Call once
-     * at startup, before EnableAll.
+     * The open detour is the head of the file-open chain, so it is installed at boot, before the chain
+     * goes live; wxl-host serves what reaches the end of the chain (HostStorage). Call once, before
+     * EnableAll.
      */
     void Install();
+
+    /**
+     * @brief Builds a buffered file handle owning a copy of bytes, answered by the file detours.
+     *
+     * For a path that has bytes in hand and no archive to open them from (wxl-host's fallback).
+     */
+    void* MakeBufferedHandle(const char* name, const uint8_t* data, uint32_t size);
 
     /**
      * @brief Callback type for client-side virtual file providers.
@@ -104,6 +111,9 @@ namespace wxl::runtime::storage
      * @param fn      transform callback
      */
     void RegisterClientTransform(const char* suffix, ClientTransformFn fn);
+
+    /// True when a registered client transform would reshape this name (its bytes must stay the file's).
+    bool HasClientTransform(const char* name);
 
     /**
      * @brief Filter for materialized bytes before the native loader sees them.

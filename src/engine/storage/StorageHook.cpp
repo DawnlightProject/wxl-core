@@ -16,6 +16,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "engine/storage/StorageHook.hpp"
+#include "engine/storage/HostStorage.hpp"
 
 #include "engine/assets/shared/common/Text.hpp"
 #include "common/Config.hpp"
@@ -307,6 +308,11 @@ namespace
         return TryClientProvider(safeName, out);
     }
 
+    uint32_t __stdcall SizeDetour(void* handle, uint32_t* sizeHigh);
+    int __stdcall ReadDetour(void* handle, void* dst, uint32_t len, uint32_t* read, void* ovl, uint32_t unk);
+    uint32_t __stdcall SeekDetour(void* handle, int32_t distLow, uint32_t* distHigh, uint32_t method);
+    int __stdcall CloseDetour(void* handle);
+
     /**
      * @brief Runs a native open's bytes through any matching client transform, swapping the handle.
      *
@@ -324,13 +330,14 @@ namespace
         wxl::runtime::storage::ClientTransformFn transform = FindClientTransform(name);
         if (!transform) return;
 
+        // Through the detours, not the engine functions: the handle may be one wxl-host served.
         uint32_t sizeHigh = 0;
-        const uint32_t size = g_origSize(handle, &sizeHigh);
+        const uint32_t size = SizeDetour(handle, &sizeHigh);
         if (sizeHigh != 0 || size == 0) return; // >4GB or empty: not a texture, leave native
 
         std::vector<uint8_t> raw(size);
         uint32_t got = 0;
-        const bool readOk = g_origRead(handle, raw.data(), size, &got, nullptr, 0) && got == size;
+        const bool readOk = ReadDetour(handle, raw.data(), size, &got, nullptr, 0) && got == size;
         if (readOk)
         {
             std::vector<uint8_t> reshaped;
@@ -339,7 +346,7 @@ namespace
                 SyntheticFile* f = BuildBufferedHandle(name, reshaped.data(), static_cast<uint32_t>(reshaped.size()));
                 if (f)
                 {
-                    g_origClose(handle);
+                    CloseDetour(handle);
                     if (out) *out = f;
                     ++g_served;
                     if (VerboseStorageLogs() && g_served < 60)
@@ -354,7 +361,7 @@ namespace
         // variable, not null: unlike this file's own SeekDetour, the native Seek's null-tolerance
         // for that out-param isn't known.
         uint32_t distHigh = 0;
-        g_origSeek(handle, 0, &distHigh, 0);
+        SeekDetour(handle, 0, &distHigh, 0);
     }
 
     /**
@@ -408,6 +415,8 @@ namespace
             if (sizeHigh) *sizeHigh = 0;
             return reinterpret_cast<SyntheticFile*>(handle)->size;
         }
+        if (wxl::runtime::storage::hosted::IsHostHandle(handle))
+            return wxl::runtime::storage::hosted::Size(handle, sizeHigh);
         return g_origSize(handle, sizeHigh);
     }
 
@@ -433,6 +442,8 @@ namespace
             if (read) *read = want;
             return (want == len) ? 1 : 0; // nonzero only when the full request was satisfied
         }
+        if (wxl::runtime::storage::hosted::IsHostHandle(handle))
+            return wxl::runtime::storage::hosted::Read(handle, dst, len, read, ovl);
         return g_origRead(handle, dst, len, read, ovl, unk);
     }
 
@@ -457,6 +468,8 @@ namespace
             if (distHigh) *distHigh = 0;
             return f->position;
         }
+        if (wxl::runtime::storage::hosted::IsHostHandle(handle))
+            return wxl::runtime::storage::hosted::Seek(handle, distLow, distHigh, method);
         return g_origSeek(handle, distLow, distHigh, method);
     }
 
@@ -475,6 +488,8 @@ namespace
             free(f);
             return 1;
         }
+        if (wxl::runtime::storage::hosted::IsHostHandle(handle))
+            return wxl::runtime::storage::hosted::Close(handle);
         return g_origClose(handle);
     }
 
@@ -540,6 +555,11 @@ namespace wxl::runtime::storage
         WLOG_INFO("Storage: hooks installed");
     }
 
+    void* MakeBufferedHandle(const char* name, const uint8_t* data, uint32_t size)
+    {
+        return BuildBufferedHandle(name ? name : "", data, size);
+    }
+
     void RegisterClientProvider(ClientProvideFn fn)
     {
         if (!fn) return;
@@ -568,5 +588,10 @@ namespace wxl::runtime::storage
         if (!fn) return;
         std::lock_guard<std::mutex> lock(RegistryMutex());
         ServeFilters().push_back(fn);
+    }
+
+    bool HasClientTransform(const char* name)
+    {
+        return name && FindClientTransform(name) != nullptr;
     }
 }

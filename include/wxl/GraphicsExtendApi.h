@@ -71,6 +71,9 @@ extern "C" {
 #define WXL_GFX_NEED_HDR     0x00000004u
 /// None of the above, but run this pass's begin and draw this frame.
 #define WXL_GFX_NEED_RUN     0x00000008u
+/// The G-buffer albedo the rewritten materials write as render target 2 (encoding in src/game/GBuffer.hpp);
+/// implies WXL_GFX_NEED_NORMALS. Needs a third simultaneous render target.
+#define WXL_GFX_NEED_ALBEDO  0x00000010u
 
 // --- pass order anchors (lower draws first) --------------------------------------------------------
 
@@ -78,6 +81,7 @@ extern "C" {
 #define WXL_GFX_ORDER_ATMOSPHERE 200   ///< fog, volumetrics
 #define WXL_GFX_ORDER_EFFECTS    250   ///< world-space effects drawn over the atmosphere
 #define WXL_GFX_ORDER_POST       300   ///< bloom, exposure, tonemap (resolves HDR)
+#define WXL_GFX_ORDER_RESOLVE    350   ///< an interim HDR resolve, for when no post pass resolved
 #define WXL_GFX_ORDER_OVERLAY    900   ///< debug views, drawn last over the finished image
 
 // --- device facts (WXL_GfxStatus::caps) ------------------------------------------------------------
@@ -139,7 +143,8 @@ typedef struct WXL_GfxBeginFrame
  *
  * The pointers are borrowed and valid until the next world pass begins or the device is lost,
  * whichever comes first. While the passes draw, render target 0 is `target`: the HDR scene colour when
- * the world was drawn in HDR and nobody resolved it yet, the back buffer otherwise.
+ * the world was drawn in HDR and nobody resolved it yet, the back buffer otherwise. Once a pass sets
+ * *colorResolved, the passes after it draw on the back buffer, and `target` says so.
  */
 typedef struct WXL_GfxFrame
 {
@@ -157,6 +162,7 @@ typedef struct WXL_GfxFrame
     int*        colorResolved;      ///< set *colorResolved = 1 once sceneColor is written to backBuffer
     float       time, deltaTime;    ///< as in WXL_GfxBeginFrame
     WXL_GfxView view;
+    void*       albedoTexture;      ///< IDirect3DTexture9*, A8R8G8B8 G-buffer albedo; null without ALBEDO
 } WXL_GfxFrame;
 
 /// Polled once per frame before the world pass: the WXL_GFX_NEED_* this pass wants, 0 to sit out.
@@ -285,6 +291,30 @@ typedef struct WXL_GfxShaderDesc
     void*              includeUser;
     uint32_t           flags;         ///< WXL_GFX_SHADER_*
 } WXL_GfxShaderDesc;
+
+// --- baked assets ----------------------------------------------------------------------------------------
+
+/**
+ * @brief A manifest of baked files: the CSV 5.tools/forever-bake writes beside them.
+ *
+ * First line "# forever-bake <type> manifest, format N. ...", then the column names, then one row per
+ * entry, the first column its key. Opaque; lives for the process.
+ */
+typedef struct WXL_GfxManifest WXL_GfxManifest;
+
+/// Keep the file as a device texture in D3DPOOL_MANAGED once read (D3D9 consumers).
+#define WXL_GFX_ASSET_TEXTURE     0u
+/// Keep the file's bytes only; the consumer decodes them itself (an atlas it packs).
+#define WXL_GFX_ASSET_BYTES       1u
+/// Keep the file as a device texture in D3DPOOL_DEFAULT, filled with UpdateTexture: what a Vulkan
+/// compute pass may import (GraphicsVulkanApi.h). Released before a device reset and read again after.
+#define WXL_GFX_ASSET_TEXTURE_GPU 2u
+
+#define WXL_GFX_ASSET_NONE    0u
+#define WXL_GFX_ASSET_PENDING 1u
+#define WXL_GFX_ASSET_READY   2u
+#define WXL_GFX_ASSET_FAILED  3u
+#define WXL_GFX_ASSET_EVICTED 4u
 
 // --- status ------------------------------------------------------------------------------------------------
 
@@ -466,6 +496,50 @@ typedef struct WXL_GraphicsExtendApi
      * WxlScreenUv). Stream 0 is unbound afterwards, as after any UP draw.
      */
     void(__cdecl* DrawFullscreen)(void* device, uint32_t width, uint32_t height);
+
+    // --- baked assets: files found through manifests and streamed within a memory budget -----------
+    // Reads run on a worker thread (the loose client folder and Data\*.MPQ directories; a file only
+    // the client's archives hold is read on the render thread instead). Textures are created on the
+    // render thread, a few per frame, by the service itself. Resident files stay by recent use within
+    // the budget (WXL_GFX_ASSET_BUDGET_MB, default 64); the least recently touched go first. A missing
+    // or broken file never fails a consumer: its texture stays null (use the Texture stand-ins).
+
+    /**
+     * @brief Loads a manifest once; the same folder and file return the same manifest.
+     * @param folder  e.g. "Textures\\Forever\\Cookies" (client-relative, either slash).
+     * @param file    NULL = "manifest.csv".
+     * @return null when absent or unreadable.
+     */
+    const WXL_GfxManifest*(__cdecl* ManifestLoad)(const char* folder, const char* file);
+    int(__cdecl* ManifestVersion)(const WXL_GfxManifest* manifest);
+    int(__cdecl* ManifestCount)(const WXL_GfxManifest* manifest);
+    /// Column index by name; -1 when absent.
+    int(__cdecl* ManifestColumn)(const WXL_GfxManifest* manifest, const char* name);
+    /// Row index by key (first column); -1 when absent.
+    int(__cdecl* ManifestFind)(const WXL_GfxManifest* manifest, const char* key);
+    /// A field's text; "" when out of range. Static for the process.
+    const char*(__cdecl* ManifestField)(const WXL_GfxManifest* manifest, int row, int column);
+    float(__cdecl* ManifestNumber)(const WXL_GfxManifest* manifest, int row, int column, float fallback);
+    /// The folder its files live in, with a trailing backslash.
+    const char*(__cdecl* ManifestFolder)(const WXL_GfxManifest* manifest);
+
+    /**
+     * @brief Asks for a file. The same path and want return the same id; higher priority reads first.
+     * @param path  client-relative ("Textures\\Forever\\Cookies\\x.dds").
+     * @param want  WXL_GFX_ASSET_TEXTURE, _BYTES or _TEXTURE_GPU.
+     * @return the id (non-zero), 0 on a bad argument. Touches the asset.
+     */
+    uint32_t(__cdecl* AssetRequest)(const char* path, int priority, uint32_t want);
+    /// IDirect3DBaseTexture9*, borrowed; null while pending, failed or evicted. Touches the asset.
+    void*(__cdecl* AssetTexture)(uint32_t id);
+    /// A _BYTES asset's bytes once read; valid until it is released or evicted. Touches the asset.
+    const void*(__cdecl* AssetBytes)(uint32_t id, size_t* size);
+    /// WXL_GFX_ASSET_* state.
+    uint32_t(__cdecl* AssetState)(uint32_t id);
+    /// The consumer is done with it for now: it may be evicted once the budget needs room.
+    void(__cdecl* AssetRelease)(uint32_t id);
+    /// One line for a panel: resident, pending, failed, megabytes of the budget.
+    const char*(__cdecl* AssetStatus)(void);
 } WXL_GraphicsExtendApi;
 
 #ifdef __cplusplus

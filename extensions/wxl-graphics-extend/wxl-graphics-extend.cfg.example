@@ -11,6 +11,8 @@
 #WXL_GFX_DEPTH=1
 # Allow the G-buffer normal target (render target 1 of the world pass) when a pass asks for it.
 #WXL_GFX_NORMALS=1
+# Allow the G-buffer albedo target (render target 2, beside the normals) when a pass asks for it.
+#WXL_GFX_ALBEDO=1
 # Allow drawing the world into an FP16 target when a pass asks for HDR.
 #WXL_GFX_HDR=1
 
@@ -22,3 +24,14 @@
 # Keep compiled shaders on disk (Extensions\wxl-graphics-extend\cache) across sessions. Each entry
 # is checked against the current sources on every hit, so a stale one is never used.
 #WXL_GFX_SHADER_DISK_CACHE=1
+
+# ----------------------------------------------------------------------------- Vulkan (DXVK)
+# Expose DXVK's Vulkan device to other extensions (compute passes). Without DXVK it is inert anyway;
+# 0 keeps it inert on DXVK too. On Windows, DXVK is chosen in WarcraftXL.cfg (WXL_D3D9_BACKEND=dxvk).
+#WXL_GFX_VULKAN=1
+
+# ----------------------------------------------------------------------------- Baked assets
+# Memory the resident baked files may hold, in MB (4..1024); the least recently used go first.
+#WXL_GFX_ASSET_BUDGET_MB=64
+# Read files on a worker thread (0 = on the render thread, at most two per frame).
+#WXL_GFX_ASSET_ASYNC=1

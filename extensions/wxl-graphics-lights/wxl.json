@@ -1,0 +1,33 @@
+{
+  "manifest": 1,
+
+  "extension": {
+    "id": "wxl-graphics-lights",
+    "version": "0.2.0",
+    "abi": "1.1",
+    "entry": "wxl-graphics-lights.dll",
+    "assets": [],
+    "requires": {},
+    "conflicts": [],
+
+    "hooks": []
+  },
+
+  "deploy": {
+    "mode": "release",
+    "match": "*.dll"
+  },
+
+  "listing": {
+    "title": "Graphics Lights",
+    "tagline": "All the light of the world in HDR: lamps in colour temperature with cookies and rooms, lit surfaces, a lamp field for the fog, and the sun, moon and sky as one light.",
+    "description": "store/description.md",
+    "cover": null,
+    "gallery": [],
+    "categories": ["rendering", "library"],
+    "accent": "#c48a3c"
+  },
+
+  "license": "GPL-3.0-or-later",
+  "signature": null
+}

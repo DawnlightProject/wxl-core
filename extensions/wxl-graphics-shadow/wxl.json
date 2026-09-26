@@ -1,0 +1,35 @@
+{
+  "manifest": 1,
+
+  "extension": {
+    "id": "wxl-graphics-shadow",
+    "version": "0.1.0",
+    "abi": "1.1",
+    "entry": "wxl-graphics-shadow.dll",
+    "assets": [],
+    "requires": {
+      "wxl-graphics-extend": "0.1.0"
+    },
+    "conflicts": [],
+
+    "hooks": []
+  },
+
+  "deploy": {
+    "mode": "release",
+    "match": "*.dll"
+  },
+
+  "listing": {
+    "title": "Graphics Shadow",
+    "tagline": "Every shadow in one place: lamps, torches, bodies, the sun, the moon and the land itself.",
+    "description": "store/description.md",
+    "cover": null,
+    "gallery": [],
+    "categories": ["rendering"],
+    "accent": "#5a6470"
+  },
+
+  "license": "GPL-3.0-or-later",
+  "signature": null
+}

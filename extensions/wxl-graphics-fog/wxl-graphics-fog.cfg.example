@@ -1,0 +1,284 @@
+# wxl-graphics-fog settings. Copy to Extensions\wxl-graphics-fog\wxl-graphics-fog.cfg and edit.
+# An environment variable of the same name wins over the file. Every value can also be changed live in
+# the overlay panel "Graphics Fog", where each control explains itself.
+# Outdoor keys are WXL_FOG_<KEY>; the indoor air's are WXL_FOG_INDOOR_<KEY>.
+# Colours are RRGGBB hex. Colour modes: native (the zone's fog colour), custom (yours), blend.
+
+# ============================================================ Switches and quality
+# Master switch.
+WXL_FOG_ENABLED=1
+# low, medium, high or ultra: steps, lamp grid, simulation rate and detail distance together.
+# Leave it unset to keep the individual keys below.
+WXL_FOG_QUALITY=high
+# Scales the whole fog (the threat API multiplies its own intensity on top).
+WXL_FOG_INTENSITY=1.0
+
+# ============================================================ The march
+# Samples per ray at half resolution, from the lens to the near range.
+WXL_FOG_NEAR_STEPS=28
+# Samples per ray at quarter resolution, from the near range to the scene or the far distance.
+WXL_FOG_FAR_STEPS=32
+# Yards where the near march hands over to the far one. The fraying lives in the near march.
+WXL_FOG_NEAR_RANGE=60
+# Yards rays towards the sky march before the haze is added in closed form.
+WXL_FOG_FAR_DISTANCE=2500
+# Yards from the lens where the fog starts.
+WXL_FOG_START_DISTANCE=0.15
+# Yards by which the fraying of the edges has faded out (its fine octave by half of it); the near
+# range at most.
+WXL_FOG_DETAIL_DISTANCE=60
+# Share of the history kept each frame, the neighbourhood clip (standard deviations), and the share of
+# scene-distance change that drops the history.
+WXL_FOG_TEMPORAL=0.9
+WXL_FOG_TEMPORAL_CLIP=1.25
+WXL_FOG_TEMPORAL_REJECT=0.12
+# Tiny noise against banding.
+WXL_FOG_DITHER=1
+
+# ============================================================ The simulation (clipmaps)
+# Steps per second of the finest level (half a yard); each coarser level steps half as often.
+WXL_FOG_CLIP_RATE=30
+# Share of a finer level's state a coarse cell takes per step where they overlap.
+WXL_FOG_CLIP_RESTRICT=0.35
+
+# ============================================================ The rivers (terrain transport)
+# Needs the baked tiles of 5.tools/forever-bake (horizon and water) for the map.
+WXL_FOG_SIM=1
+# Yards per second of flow on a 45 degree slope, once it runs.
+WXL_FOG_SIM_DRAINAGE=4
+# How fast the flow forgets its speed, per second.
+WXL_FOG_SIM_FRICTION=0.8
+# Surface tilt the wind gives the fog, per yard per second of wind.
+WXL_FOG_SIM_WIND_PUSH=0.02
+# Fastest flow, yards per second.
+WXL_FOG_SIM_MAX_SPEED=10
+# Yards of fog formed per minute on open ground at night; the share by day; the extra in hollows and
+# over water (times the formation).
+WXL_FOG_SIM_SOURCE=2.5
+WXL_FOG_SIM_DAY_SOURCE=0.3
+WXL_FOG_SIM_HOLLOW_SOURCE=1.5
+WXL_FOG_SIM_WATER_SOURCE=2.0
+# Shares per minute: mixing away, burnt off by full sun, scoured by the wind on ridges (per yd/s).
+WXL_FOG_SIM_DECAY=0.6
+WXL_FOG_SIM_SUN_DECAY=2.0
+WXL_FOG_SIM_WIND_DECAY=0.4
+# Yards a basin fills before its top mixes away quickly.
+WXL_FOG_SIM_POOL_DEPTH=24
+# Simulated seconds per second, and steps per second.
+WXL_FOG_SIM_TIME_SCALE=1.0
+WXL_FOG_SIM_RATE=10
+# Simulated seconds run quickly after a teleport or when terrain arrives, and the share of each
+# hollow's depth filled at the start.
+WXL_FOG_SIM_WARMUP=180
+WXL_FOG_SIM_INITIAL_FILL=0.6
+
+# ============================================================ Light (global)
+# How much hills shade the fog, and the penumbra of their shadow (degrees of the body's elevation).
+WXL_FOG_TERRAIN_SHADOW=1.0
+WXL_FOG_TERRAIN_PENUMBRA=3
+# Trees and buildings shade the fog near you through the engine's sun cascades (extShadowQuality 3+).
+WXL_FOG_WORLD_SHADOWS=1
+WXL_FOG_WORLD_SHADOW=0.6
+# Extra bounces of the multiple-scattering estimate (0..3).
+WXL_FOG_MS_OCTAVES=2
+
+# ============================================================ Lamps and indoor air
+WXL_FOG_LAMPS=1
+# The camera's lamp and indoor grid.
+WXL_FOG_LAMP_GRID_X=160
+WXL_FOG_LAMP_GRID_Y=90
+WXL_FOG_LAMP_GRID_Z=64
+# Beams through lantern cages from the core's omni shadow maps; yards a sample is pulled towards the lamp.
+WXL_FOG_OMNI_SHADOWS=1
+WXL_FOG_OMNI_BIAS=0.15
+# Inside buildings the air is its own medium. Seconds the air around you takes to change at a doorway,
+# and yards around you that follow it.
+WXL_FOG_INDOOR_DETECT=1
+WXL_FOG_INDOOR_TRANSITION=5
+WXL_FOG_INDOOR_LAG_RADIUS=8
+
+# ============================================================ Effects
+# Bodies (players, zombies, NPCs) stir a 2D flow at the ground around you (0.25 yd near you, 1 yd
+# further out): the fog parts ahead of them, curls in eddies at their flanks and flows back in behind.
+# Yards around you bodies are tracked (up to 192).
+WXL_FOG_WAKES=1
+WXL_FOG_WAKE_RANGE=100
+# Missiles cut tunnels that refill with billows; smoke emitters make plumes; fires thin the fog.
+WXL_FOG_PROJECTILES=1
+WXL_FOG_PLUMES=1
+WXL_FOG_HEAT_ENABLED=1
+# Standing inside thick fog closes it in around the screen.
+WXL_FOG_IMMERSION_ENABLED=1
+# Push the client's own distance fog to the far edge while this fog draws; where it then starts.
+WXL_FOG_NATIVE_FOG=1
+WXL_FOG_NATIVE_FOG_START=0.85
+# A warm test light at your character.
+WXL_FOG_DEBUG_LANTERN=0
+# A pretend torch in your hand, with its pocket in the fog.
+WXL_FOG_DEBUG_TORCH=0
+
+# ============================================================ Outdoor profile: where the fog lies
+# Extinction per yard inside the terrain layer (rivers, pools): the main thickness.
+WXL_FOG_DENSITY=0.14
+# A thin mist on the ground everywhere, and how high it reaches (yards).
+WXL_FOG_GROUND_DENSITY=0.018
+WXL_FOG_GROUND_HEIGHT=5
+# How high the fog climbs above the lying layer where it is deep, in soft billows (yards; 0 = a slab).
+WXL_FOG_CLIMB=4
+# Yards of fog lying on open ground at night at the least, between the rivers (a share by day; 0 = none).
+WXL_FOG_MIN_DEPTH=0
+# The haze to the horizon: per yard, yards over the camera's ground where it starts to thin, falloff per yard.
+WXL_FOG_HAZE_DENSITY=0.0012
+WXL_FOG_HAZE_HEIGHT=30
+WXL_FOG_HAZE_FALLOFF=0.012
+# Drifting banks: share of the land under them, how much they shape the fog, their size (yards).
+WXL_FOG_BANK_COVERAGE=0.72
+WXL_FOG_BANK_STRENGTH=0.5
+WXL_FOG_BANK_SCALE=320
+
+# ============================================================ Outdoor profile: the atmosphere
+# A smooth haze in the whole air column, above and beyond the lying fog: aerial perspective, mood, lamp
+# halos in the air. It is marched with the fog, so the two share one transmittance.
+# Extinction per yard at its base (0 turns it off), yards of height in which it thins to a third, and
+# yards over the ground up to which it keeps its full density.
+WXL_FOG_AIR_DENSITY=0.003
+WXL_FOG_AIR_HEIGHT=40
+WXL_FOG_AIR_BASE=0
+# 0 measures its height from the ground under you (hills rise out of it), 1 from the terrain everywhere.
+WXL_FOG_AIR_FOLLOW=0.5
+# Large, slow patches drifting with the wind: how strong, and how big (yards).
+WXL_FOG_AIR_NOISE=0.35
+WXL_FOG_AIR_NOISE_SCALE=180
+# Share of the fog's colour it takes (0 = neutral), and its forward glow.
+WXL_FOG_AIR_COLOR_SHARE=0.5
+WXL_FOG_AIR_ANISOTROPY=0.35
+# The sunlight, moonlight, sky light and lamp glow it scatters.
+WXL_FOG_AIR_SUN=1.0
+WXL_FOG_AIR_MOON=1.0
+WXL_FOG_AIR_SKY=1.0
+WXL_FOG_AIR_LAMP=1.0
+
+# ============================================================ Cascades
+# Fog banks lying behind crests spill over them and pour down the far side, thinning as they fall. The
+# spill points come from the baked cascade maps (5.tools/forever-bake: bake.py cascade --map <Map>);
+# gameplay adds its own through the API.
+WXL_FOG_CASCADES=1
+# How much fog the automatic banks hold, a full bank's depth (yards), how clear a spill point must be
+# (0..1, lower gives more), and how much the wind picks the crests that pour (1 only those it blows over).
+WXL_FOG_CASCADE_STRENGTH=1.0
+WXL_FOG_CASCADE_DEPTH=12
+WXL_FOG_CASCADE_THRESHOLD=0.3
+WXL_FOG_CASCADE_WIND=0.6
+# Yards of descent over which falling cascade fog warms and thins to a third, and how much fog running
+# down steep slopes stretches into long strands along its fall.
+WXL_FOG_CASCADE_EVAPORATION=100
+WXL_FOG_CASCADE_STREAKS=1.5
+
+# ============================================================ Outdoor profile: substance
+# Billow size (yards), their contrast in thin fog, the lumpiness of thick cores.
+WXL_FOG_SHAPE_SCALE=3
+WXL_FOG_SHAPE_CONTRAST=0.85
+WXL_FOG_DENSE_CONTRAST=0.35
+# The lying fog's top: softness, and how much it heaves in billows (share of its depth).
+WXL_FOG_TOP_SOFTNESS=1.2
+WXL_FOG_TOP_BILLOW=0.6
+# The wisps that fray the edges near you: size (yards), how much they eat, how much they curl.
+WXL_FOG_DETAIL_SCALE=0.7
+WXL_FOG_EROSION=0.6
+WXL_FOG_CURL=0.35
+
+# ============================================================ Outdoor profile: motion
+# Seconds a carved hole takes to grow back and a billow lives.
+WXL_FOG_RENEWAL=8
+# Wind at 40 yards up (yards per second) and the heading it blows towards (degrees clockwise from north).
+WXL_FOG_WIND_SPEED=1.0
+WXL_FOG_WIND_DIRECTION=200
+# Swirling inside the fog (yards per second), and how much the rivers' flow carries the billows.
+WXL_FOG_TURBULENCE=0.45
+WXL_FOG_LAYER_FLOW=1.0
+
+# ============================================================ Outdoor profile: light and colour
+WXL_FOG_COLOR_MODE=blend
+WXL_FOG_COLOR=858F87
+WXL_FOG_COLOR_BLEND=0.5
+WXL_FOG_BRIGHTNESS=1.0
+# Sky light: strength, the least any fog gets, darker in valleys, tinted by the zone's fog colour.
+WXL_FOG_AMBIENT=1.0
+WXL_FOG_AMBIENT_FLOOR=0.12
+WXL_FOG_VALLEY_DARKENING=1.5
+WXL_FOG_ZONE_TINT=0.5
+# Sunlight, moonlight and lamp halos scattered by the fog.
+WXL_FOG_SUN_SCATTER=1.0
+WXL_FOG_MOON_SCATTER=1.0
+WXL_FOG_LAMP_SCATTER=1.6
+# How dark bodies near you make the fog behind them, lit by a torch or a lamp without a shadow map.
+WXL_FOG_BODY_SHADOW=0.85
+# Phase: the forward glow, the back glow and its share.
+WXL_FOG_ANISOTROPY=0.55
+WXL_FOG_BACK_ANISOTROPY=-0.2
+WXL_FOG_LOBE_BLEND=0.25
+# Powder (dark soft edges facing away from the light), multiple scattering, self-shadow, sky shadow.
+WXL_FOG_POWDER=0.4
+WXL_FOG_MS_STRENGTH=0.8
+WXL_FOG_SELF_SHADOW=1.0
+WXL_FOG_SKY_SHADOW=0.5
+# Overall brightness of the fog's light, and how bright its glow may get before it is softened.
+WXL_FOG_EXPOSURE=1.0
+WXL_FOG_SOFT_WHITE=2.0
+
+# ============================================================ Outdoor profile: effects
+WXL_FOG_SMOKE=1.0
+WXL_FOG_FIRE_SMOKE=0.4
+WXL_FOG_SMOKE_DARKNESS=0.6
+WXL_FOG_HEAT=0.6
+# How much a moving body clears (at rest the fog closes round it), its size as a share of the body's,
+# how strongly the stirred air moves the whole fog, the eddies' curl, how fast the air calms (per
+# second), seconds for a hole to close on its own, and yards over the head the wake reaches.
+WXL_FOG_WAKE_STRENGTH=0.9
+WXL_FOG_WAKE_RADIUS=1.0
+WXL_FOG_WAKE_PUSH=1.5
+WXL_FOG_WAKE_VORTICITY=0.6
+WXL_FOG_WAKE_DAMPING=0.5
+WXL_FOG_WAKE_REFILL=12
+WXL_FOG_WAKE_HEIGHT=0.8
+# Impacts and area spells blow the fog out in a ring that flows back; fire spells and flames burn it
+# away; frost spells and icy effects leave fog.
+WXL_FOG_SHOCK=1.0
+WXL_FOG_FIRE_EVAPORATION=1.0
+WXL_FOG_FROST_FOG=0.6
+# A carried torch or lantern pushes the fog back around its bearer and keeps it from forming there:
+# how much (0 = off), the pocket's radius as a share of the light's reach, the thin ground mist left
+# inside (per yard), and seconds for the fog to settle back once the torch is put away.
+WXL_FOG_TORCH_CLEAR=0.85
+WXL_FOG_TORCH_RADIUS=0.45
+WXL_FOG_TORCH_FLOOR=0.01
+WXL_FOG_TORCH_RECOVERY=8
+WXL_FOG_PROJECTILE_CARVE=0.95
+WXL_FOG_PROJECTILE_RADIUS=1.0
+WXL_FOG_PROJECTILE_HOLD=0.5
+WXL_FOG_PROJECTILE_REFILL=5
+WXL_FOG_TRAIL_BILLOW=1.0
+WXL_FOG_IMMERSION=0.6
+WXL_FOG_IMMERSION_BLUR=0.5
+
+# ============================================================ Indoor profile (inside buildings)
+# Dust per yard, the extra haze near the floor (times the dust) and its height (yards).
+WXL_FOG_INDOOR_DENSITY=0.022
+WXL_FOG_INDOOR_FLOOR_HAZE=1.0
+WXL_FOG_INDOOR_FLOOR_HAZE_HEIGHT=1.5
+# How patchy the dust is, its patch size (yards), and how fast it drifts (yards per second).
+WXL_FOG_INDOOR_NOISE_STRENGTH=0.5
+WXL_FOG_INDOOR_NOISE_SCALE=4
+WXL_FOG_INDOOR_DRIFT=0.08
+# Yards the outdoor fog reaches inside through doorways and walls.
+WXL_FOG_INDOOR_SEEP=0.75
+WXL_FOG_INDOOR_COLOR_MODE=custom
+WXL_FOG_INDOOR_COLOR=9A8A78
+WXL_FOG_INDOOR_COLOR_BLEND=0.5
+WXL_FOG_INDOOR_BRIGHTNESS=1.0
+# The dim light from windows and doors, and the lamps' halos in the dust.
+WXL_FOG_INDOOR_AMBIENT=0.35
+WXL_FOG_INDOOR_LAMP_SCATTER=2.0
+WXL_FOG_INDOOR_ANISOTROPY=0.45
+WXL_FOG_INDOOR_BACK_ANISOTROPY=-0.15
+WXL_FOG_INDOOR_LOBE_BLEND=0.2

@@ -33,7 +33,7 @@
 extern "C" {
 #endif
 
-#define WXL_SHADOWLIGHT_API_VERSION 1
+#define WXL_SHADOWLIGHT_API_VERSION 2 // 2 appends Claim, Release, SetAdjustOwned
 
 /// dir: in the engine's direction, out the one to render with. sun: the engine's lighting
 /// direction this frame (points down, unit length; zero when unknown). Main thread.
@@ -51,6 +51,16 @@ typedef struct WXL_ShadowLightApi
     /// The direction the maps were last rendered along (after adjustment). Returns 0 before the
     /// first frame.
     int (__cdecl* GetDirection)(float dir[3]);
+
+    // --- v2 ---
+    /// Takes the adjuster for owner (any address unique to the caller): while held, SetAdjust from
+    /// anyone is accepted (returns 1) and ignored, and only SetAdjustOwned by owner applies. Returns 1
+    /// when owner holds it, 0 when another does.
+    int (__cdecl* Claim)(const void* owner);
+    /// Gives the claim back (only its owner can) and removes its adjuster.
+    void (__cdecl* Release)(const void* owner);
+    /// SetAdjust for the claim's holder (or anyone while it is free).
+    int (__cdecl* SetAdjustOwned)(const void* owner, WXL_ShadowLightAdjustFn fn, void* user);
 } WXL_ShadowLightApi;
 
 #ifdef __cplusplus

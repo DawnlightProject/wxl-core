@@ -42,8 +42,16 @@
 extern "C" {
 #endif
 
-#define WXL_OMNISHADOWS_API_VERSION 2 // 2 appends SetLightsEx and GetState
-#define WXL_OMNISHADOWS_MAX 4
+#define WXL_OMNISHADOWS_API_VERSION 3 // 2 appends SetLightsEx and GetState; 3 appends Claim, SetLightsV3, ...
+#define WXL_OMNISHADOWS_MAX 4         // lights a v1 / v2 caller sets
+#define WXL_OMNISHADOWS_MAX_V3 12     // lights SetLightsV3 sets
+
+// v3 caster classes: which of the engine's casters a light's map holds (0 = both, as v1 and v2).
+#define WXL_OMNI_CASTERS_STATIC   0x1u  ///< WMOs and every model that belongs to no unit
+#define WXL_OMNI_CASTERS_DYNAMIC  0x2u  ///< units and every model attached to one (weapons, torches)
+/// v3: with CASTERS_DYNAMIC alone, the faces that see a unit are redrawn every frame (animation shows)
+/// and a face whose last unit left is redrawn once, empty. Faces that never saw one cost nothing.
+#define WXL_OMNI_REDRAW_OCCUPIED  0x4u
 
 typedef struct WXL_OmniLight
 {
@@ -59,6 +67,17 @@ typedef struct WXL_OmniLightEx
     uint32_t id;          ///< nonzero and stable per light; 0 = match by slot index
     uint32_t reserved;
 } WXL_OmniLightEx;
+
+/// SetLightsV3's light.
+typedef struct WXL_OmniLightV3
+{
+    float    position[3];
+    float    radius;
+    uint32_t id;          ///< nonzero and stable per light (and per map when a light takes two)
+    uint32_t flags;       ///< WXL_OMNI_CASTERS_* | WXL_OMNI_REDRAW_OCCUPIED
+    uint32_t faceMask;    ///< bit f: face f is rendered; 0 = all six. Faces left out stay 1 (lit)
+    uint32_t faceSize;    ///< 0 = the SetFaceSize default; else rounded down to a power of two, 64..1024
+} WXL_OmniLightV3;
 
 /// Per-light change tracking, from GetState.
 typedef struct WXL_OmniShadowState
@@ -96,7 +115,9 @@ typedef struct WXL_OmniShadowsApi
     /// Reads one light's maps. Returns 0 when index is out of range.
     int(__cdecl* Get)(uint32_t index, WXL_OmniShadow* out);
     uint32_t(__cdecl* Count)(void);
-    /// Changes whenever the atlases are recreated; drop cached texture pointers then.
+    /// Changes whenever the atlases are recreated; drop cached texture pointers then. A replaced
+    /// atlas stays alive four more frames, so a pointer read before the world pass is safe to use
+    /// in that frame's later passes.
     uint32_t(__cdecl* Generation)(void);
 
     // --- appended; present when structSize covers them ---
@@ -106,6 +127,25 @@ typedef struct WXL_OmniShadowsApi
     void(__cdecl* SetLightsEx)(const WXL_OmniLightEx* lights, uint32_t count);
     /// Reads one light's change tracking. Returns 0 when index is out of range.
     int(__cdecl* GetState)(uint32_t index, WXL_OmniShadowState* out);
+
+    // --- v3 ---
+    /**
+     * @brief Takes exclusive driving of the maps for owner (any address unique to the caller).
+     *
+     * While held, SetLights, SetLightsEx, SetBudget and SetFaceSize from anyone are accepted and
+     * ignored (Get, Count, GetState and Generation still answer everyone), and only the owner's
+     * SetLightsV3 and SetBudgetV3 apply. Returns 1 when owner holds it, 0 when another does.
+     */
+    int(__cdecl* Claim)(const void* owner);
+    /// Gives the claim back (only its owner can); the light set is dropped.
+    void(__cdecl* Release)(const void* owner);
+    /// Like SetLightsEx with caster classes, face masks and face sizes, up to WXL_OMNISHADOWS_MAX_V3.
+    /// Only while the claim is free or held by owner; a light's slot index is its index here.
+    void(__cdecl* SetLightsV3)(const void* owner, const WXL_OmniLightV3* lights, uint32_t count);
+    /// SetBudget for the claim's owner: faces of still lights refreshed per frame, in turn.
+    void(__cdecl* SetBudgetV3)(const void* owner, uint32_t facesPerFrame);
+    /// Faces rendered on the last frame, all lights together (priority and round-robin).
+    uint32_t(__cdecl* FacesLastFrame)(void);
 } WXL_OmniShadowsApi;
 
 #ifdef __cplusplus

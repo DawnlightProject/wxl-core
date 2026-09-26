@@ -15,14 +15,20 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 // The client LoadLibrary's "d3d9.dll" from its own folder first, so this proxy loads ahead of the system
-// one. It forwards the factory-create exports to the real system d3d9, loads WarcraftXL.dll into the
-// process, and has the factory create a non-pure device. All rendering runs on the client's native device.
+// one. It forwards the factory-create exports to the real d3d9 -- the system one, or DXVK's when
+// WXL_D3D9_BACKEND=dxvk -- loads WarcraftXL.dll into the process, and has the factory create a non-pure
+// device. Unless WXL_D3D9EX=0, the engine's Direct3DCreate9
+// gets a D3D9Ex factory and its CreateDevice a D3D9Ex device, whose managed pool the proxy emulates
+// (Managed.cpp); a refused CreateDeviceEx falls back to a classic device.
 
 #include <windows.h>
 #include <d3d9.h>
 
+#include "common/Config.hpp"
 #include "common/Log.hpp"
 #include "common/Mem.hpp"
+#include "engine/gpu/GpuStats.hpp"
+#include "engine/gpu/Resources.hpp"
 
 #include <cstdarg>
 
@@ -52,13 +58,13 @@ namespace
     }
 
     /**
-     * @brief Loads the real d3d9 from the system directory, falling back to a local d3d9_real.dll.
+     * @brief Loads the system d3d9 from the system directory, falling back to a local d3d9_real.dll.
      *
      * A loaded module is keyed by full path, so the system d3d9.dll is a distinct module from this proxy
      * despite the shared base name.
-     * @return Handle to the real d3d9 module, or null on failure.
+     * @return Handle to the system d3d9 module, or null on failure.
      */
-    HMODULE LoadRealD3D9()
+    HMODULE LoadSystemD3D9()
     {
         char path[MAX_PATH];
         UINT n = GetSystemDirectoryA(path, MAX_PATH);
@@ -68,6 +74,100 @@ namespace
             if (HMODULE r = LoadLibraryA(path)) return r;
         }
         return LoadLibraryA("d3d9_real.dll");
+    }
+
+    /**
+     * @brief Loads DXVK's d3d9.dll when WXL_D3D9_BACKEND=dxvk (WarcraftXL.cfg or the environment).
+     *
+     * The file is WXL_DXVK_PATH, by default the copy wxl-graphics-extend ships; a relative path is taken
+     * from the folder this proxy sits in (the client folder), not from the working directory, which the
+     * client may change. Like the system one, it is a distinct module from the proxy by its full path.
+     * Unless already set, DXVK reads the dxvk.conf beside its DLL and logs into the client's Logs folder.
+     * @param self  the proxy's own module, for its folder; null falls back to LoadLibrary's own search.
+     * @return Handle to DXVK's d3d9, or null when the backend is native or DXVK did not load (logged).
+     */
+    HMODULE LoadDxvkD3D9(HMODULE self)
+    {
+        char backend[32] = {};
+        if (!::wxl::config::Raw("WXL_D3D9_BACKEND", backend, sizeof backend)) return nullptr;
+        if (lstrcmpiA(backend, "dxvk") != 0)
+        {
+            if (lstrcmpiA(backend, "native") != 0)
+                Log("d3d9proxy: WXL_D3D9_BACKEND=%s is not native or dxvk; using native", backend);
+            return nullptr;
+        }
+
+        char path[MAX_PATH] = {};
+        if (!::wxl::config::Raw("WXL_DXVK_PATH", path, sizeof path))
+            lstrcpyA(path, "Extensions\\wxl-graphics-extend\\dxvk\\d3d9.dll");
+
+        char full[MAX_PATH] = {};
+        const bool absolute = path[0] == '\\' || path[0] == '/' || (path[0] != '\0' && path[1] == ':');
+        if (!absolute && self)
+        {
+            const DWORD n = GetModuleFileNameA(self, full, MAX_PATH);
+            if (n == 0 || n >= MAX_PATH) full[0] = '\0';
+            else
+            {
+                char* slash = nullptr;
+                for (char* p = full; *p; ++p)
+                    if (*p == '\\' || *p == '/') slash = p;
+                if (slash) slash[1] = '\0';
+                if (lstrlenA(full) + lstrlenA(path) >= MAX_PATH) full[0] = '\0';
+                else lstrcatA(full, path);
+            }
+        }
+        if (!full[0]) lstrcpynA(full, path, MAX_PATH);
+
+        // DXVK reads its settings and log path from the environment when it loads.
+        char dir[MAX_PATH] = {};
+        lstrcpynA(dir, full, MAX_PATH);
+        char* cut = nullptr;
+        for (char* p = dir; *p; ++p)
+            if (*p == '\\' || *p == '/') cut = p;
+        if (cut)
+        {
+            cut[1] = '\0';
+            char probe[8];
+            char value[MAX_PATH] = {};
+            if (!GetEnvironmentVariableA("DXVK_CONFIG_FILE", probe, sizeof probe)
+                && lstrlenA(dir) + 9 < MAX_PATH)
+            {
+                lstrcpyA(value, dir);
+                lstrcatA(value, "dxvk.conf");
+                SetEnvironmentVariableA("DXVK_CONFIG_FILE", value);
+            }
+            if (!GetEnvironmentVariableA("DXVK_LOG_PATH", probe, sizeof probe) && self)
+            {
+                const DWORD n = GetModuleFileNameA(self, value, MAX_PATH);
+                char* slash = nullptr;
+                for (char* p = value; n && *p; ++p)
+                    if (*p == '\\' || *p == '/') slash = p;
+                if (slash && lstrlenA(value) + 4 < MAX_PATH)
+                {
+                    lstrcpyA(slash + 1, "Logs");
+                    SetEnvironmentVariableA("DXVK_LOG_PATH", value);
+                }
+            }
+        }
+        // Vulkan drivers the loader skips (manifest globs such as *amd-vulkan*, never *amd*: NVIDIA's
+        // path holds "amd64"). An unused GPU's driver otherwise maps into the 32-bit address space.
+        char drivers[128] = {};
+        char probe[8];
+        if (::wxl::config::Raw("WXL_VK_DRIVERS_DISABLE", drivers, sizeof drivers) && drivers[0]
+            && !GetEnvironmentVariableA("VK_LOADER_DRIVERS_DISABLE", probe, sizeof probe))
+        {
+            SetEnvironmentVariableA("VK_LOADER_DRIVERS_DISABLE", drivers);
+            Log("d3d9proxy: backend dxvk: Vulkan drivers disabled: %s", drivers);
+        }
+
+        if (HMODULE r = LoadLibraryA(full))
+        {
+            Log("d3d9proxy: backend dxvk: %s loaded", full);
+            return r;
+        }
+        Log("d3d9proxy: backend dxvk: %s did not load (win32=%lu); falling back to the system d3d9", full, GetLastError());
+        return nullptr;
     }
 
     // --- non-pure device ---
@@ -88,6 +188,13 @@ namespace
     CreateDeviceFn   g_origCreateDeviceOnEx = nullptr;
     CreateDeviceExFn g_origCreateDeviceEx  = nullptr;
 
+    /// D3D9Ex unless WXL_D3D9EX=0.
+    bool UseEx()
+    {
+        static const bool on = ::wxl::config::Env("WXL_D3D9EX", true);
+        return on;
+    }
+
     DWORD StripPure(DWORD flags, const char* entry)
     {
         const DWORD out = flags & ~static_cast<DWORD>(D3DCREATE_PUREDEVICE);
@@ -103,20 +210,64 @@ namespace
     HRESULT STDMETHODCALLTYPE hkCreateDevice9(IDirect3D9* self, UINT adapter, D3DDEVTYPE type, HWND wnd,
                                               DWORD flags, D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** out)
     {
-        return g_origCreateDevice9(self, adapter, type, wnd, StripPure(flags, "CreateDevice"), pp, out);
+        const HRESULT hr = g_origCreateDevice9(self, adapter, type, wnd, StripPure(flags, "CreateDevice"), pp, out);
+        if (SUCCEEDED(hr) && out && *out) ::wxl::gpu::resources::Attach(*out, false);
+        return hr;
     }
 
     HRESULT STDMETHODCALLTYPE hkCreateDeviceOnEx(IDirect3D9* self, UINT adapter, D3DDEVTYPE type, HWND wnd,
                                                  DWORD flags, D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** out)
     {
-        return g_origCreateDeviceOnEx(self, adapter, type, wnd, StripPure(flags, "CreateDevice(Ex factory)"), pp, out);
+        const HRESULT hr = g_origCreateDeviceOnEx(self, adapter, type, wnd,
+                                                  StripPure(flags, "CreateDevice(Ex factory)"), pp, out);
+        if (SUCCEEDED(hr) && out && *out) ::wxl::gpu::resources::Attach(*out, false);
+        return hr;
+    }
+
+    /**
+     * @brief The engine's CreateDevice on a D3D9Ex factory: a D3D9Ex device, or a classic one if refused.
+     *
+     * Same parameters; a fullscreen device also needs its display mode spelled out.
+     */
+    HRESULT STDMETHODCALLTYPE hkCreateDeviceAsEx(IDirect3D9* self, UINT adapter, D3DDEVTYPE type, HWND wnd,
+                                                 DWORD flags, D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** out)
+    {
+        flags = StripPure(flags, "CreateDevice (as D3D9Ex)");
+        if (pp && out && g_origCreateDeviceEx)
+        {
+            D3DDISPLAYMODEEX mode{};
+            mode.Size = sizeof mode;
+            mode.Width = pp->BackBufferWidth;
+            mode.Height = pp->BackBufferHeight;
+            mode.RefreshRate = pp->FullScreen_RefreshRateInHz;
+            mode.Format = pp->BackBufferFormat == D3DFMT_A8R8G8B8 ? D3DFMT_X8R8G8B8 : pp->BackBufferFormat;
+            mode.ScanLineOrdering = D3DSCANLINEORDERING_PROGRESSIVE;
+            IDirect3DDevice9Ex* ex = nullptr;
+            const HRESULT hr = g_origCreateDeviceEx(reinterpret_cast<IDirect3D9Ex*>(self), adapter, type, wnd, flags,
+                                                    pp, pp->Windowed ? nullptr : &mode, &ex);
+            if (SUCCEEDED(hr) && ex)
+            {
+                *out = ex;
+                Log("d3d9proxy: device created through CreateDeviceEx (D3D9Ex, %ux%u %s)", pp->BackBufferWidth,
+                    pp->BackBufferHeight, pp->Windowed ? "windowed" : "fullscreen");
+                ::wxl::gpu::resources::Attach(ex, true);
+                return hr;
+            }
+            Log("d3d9proxy: CreateDeviceEx refused (0x%08lX); creating a classic device", static_cast<unsigned long>(hr));
+        }
+        const HRESULT hr = g_origCreateDeviceOnEx(self, adapter, type, wnd, flags, pp, out);
+        if (SUCCEEDED(hr) && out && *out) ::wxl::gpu::resources::Attach(*out, false);
+        return hr;
     }
 
     HRESULT STDMETHODCALLTYPE hkCreateDeviceEx(IDirect3D9Ex* self, UINT adapter, D3DDEVTYPE type, HWND wnd,
                                                DWORD flags, D3DPRESENT_PARAMETERS* pp, D3DDISPLAYMODEEX* mode,
                                                IDirect3DDevice9Ex** out)
     {
-        return g_origCreateDeviceEx(self, adapter, type, wnd, StripPure(flags, "CreateDeviceEx"), pp, mode, out);
+        const HRESULT hr = g_origCreateDeviceEx(self, adapter, type, wnd, StripPure(flags, "CreateDeviceEx"), pp,
+                                                mode, out);
+        if (SUCCEEDED(hr) && out && *out) ::wxl::gpu::resources::Attach(*out, true);
+        return hr;
     }
 
     /// Swaps one factory vtable slot once; a vtable already carrying the hook is left alone.
@@ -141,12 +292,20 @@ namespace
         HMODULE self = nullptr;
         if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
                                 reinterpret_cast<LPCSTR>(&EnsureReal), &self))
+        {
             Log("d3d9proxy: could not pin the proxy (win32=%lu)", GetLastError());
-        HMODULE r = LoadRealD3D9();
+            self = nullptr;
+        }
+        // DXVK when asked for and present; the system d3d9 otherwise, and when DXVK does not load.
+        HMODULE r = LoadDxvkD3D9(self);
+        const char* backend = r ? "dxvk" : "native";
+        if (!r) r = LoadSystemD3D9();
         if (!r) { Log("d3d9proxy: FAILED to load the system d3d9.dll"); return; }
-        g_realCreate9   = reinterpret_cast<Create9Fn>(GetProcAddress(r, "Direct3DCreate9"));
-        g_realCreate9Ex = reinterpret_cast<Create9ExFn>(GetProcAddress(r, "Direct3DCreate9Ex"));
-        Log("d3d9proxy: system d3d9 loaded (9=%p Ex=%p)", g_realCreate9, g_realCreate9Ex);
+        // Through void*: a FARPROC is not the entry's type, and a direct cast is what GCC's
+        // -Wcast-function-type flags (MSVC is silent either way).
+        g_realCreate9   = reinterpret_cast<Create9Fn>(reinterpret_cast<void*>(GetProcAddress(r, "Direct3DCreate9")));
+        g_realCreate9Ex = reinterpret_cast<Create9ExFn>(reinterpret_cast<void*>(GetProcAddress(r, "Direct3DCreate9Ex")));
+        Log("d3d9proxy: backend %s: d3d9 loaded (9=%p Ex=%p)", backend, g_realCreate9, g_realCreate9Ex);
     }
 
     /**
@@ -175,6 +334,18 @@ extern "C" IDirect3D9* WINAPI Direct3DCreate9(UINT sdkVersion)
 {
     EnsureReal();
     EnsureRuntimeLoaded();
+    if (UseEx() && g_realCreate9Ex)
+    {
+        // A D3D9Ex factory answers every IDirect3D9 call; its CreateDevice makes a D3D9Ex device.
+        IDirect3D9Ex* ex = nullptr;
+        if (SUCCEEDED(g_realCreate9Ex(sdkVersion, &ex)) && ex)
+        {
+            HookSlot(ex, kSlotCreateDeviceEx, &hkCreateDeviceEx, &g_origCreateDeviceEx);
+            HookSlot(static_cast<IDirect3D9*>(ex), kSlotCreateDevice, &hkCreateDeviceAsEx, &g_origCreateDeviceOnEx);
+            return ex;
+        }
+        Log("d3d9proxy: Direct3DCreate9Ex failed; classic D3D9");
+    }
     IDirect3D9* factory = g_realCreate9 ? g_realCreate9(sdkVersion) : nullptr;
     if (factory) HookSlot(factory, kSlotCreateDevice, &hkCreateDevice9, &g_origCreateDevice9);
     return factory;
@@ -195,13 +366,27 @@ extern "C" HRESULT WINAPI Direct3DCreate9Ex(UINT sdkVersion, IDirect3D9Ex** out)
         const HRESULT hr = g_realCreate9Ex(sdkVersion, out);
         if (SUCCEEDED(hr) && out && *out)
         {
-            HookSlot(*out, kSlotCreateDevice, &hkCreateDeviceOnEx, &g_origCreateDeviceOnEx);
             HookSlot(*out, kSlotCreateDeviceEx, &hkCreateDeviceEx, &g_origCreateDeviceEx);
+            if (UseEx())
+                HookSlot(static_cast<IDirect3D9*>(*out), kSlotCreateDevice, &hkCreateDeviceAsEx, &g_origCreateDeviceOnEx);
+            else
+                HookSlot(static_cast<IDirect3D9*>(*out), kSlotCreateDevice, &hkCreateDeviceOnEx, &g_origCreateDeviceOnEx);
         }
         return hr;
     }
     if (out) *out = nullptr;
     return E_NOINTERFACE;
+}
+
+/**
+ * @brief Fills a snapshot of every live D3D resource by creator, type and pool, for the core's diagnostic.
+ * @param out      receives the snapshot.
+ * @param outSize  sizeof the caller's GpuStats, refused when smaller than this build's.
+ * @return 1 on success, 0 when out is null or too small.
+ */
+extern "C" int __cdecl WXL_ProxyStats(::wxl::gpu::GpuStats* out, uint32_t outSize)
+{
+    return ::wxl::gpu::resources::Snapshot(out, outSize);
 }
 
 /**

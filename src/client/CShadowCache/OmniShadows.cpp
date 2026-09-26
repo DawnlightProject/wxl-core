@@ -1,5 +1,6 @@
 // Omni shadows: re-issues the engine's main shadow-map casters from chosen point lights into 6-face
-// R32F atlases, the way CShadowQuery::Render (0x007BBC50) draws its own maps. "wxl.omnishadows".
+// R32F atlases, the way CShadowQuery::Render (0x007BBC50) draws its own maps, optionally split into
+// static and unit casters. "wxl.omnishadows" v3 (also published as v2).
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -21,6 +22,7 @@
 #include "engine/hook/Registry.hpp"
 #include "game/Gx.hpp"
 #include "game/Shadows.hpp"
+#include "game/Unit.hpp"
 #include "game/World.hpp"
 #include "offsets/engine/Gx.hpp"
 #include "offsets/engine/Shadows.hpp"
@@ -31,8 +33,10 @@
 #include <windows.h>
 #include <d3d9.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 namespace
 {
@@ -45,6 +49,8 @@ namespace
     constexpr uintptr_t kTexFlagsCtor   = 0x00681BE0; // CGxTexFlags::CGxTexFlags __thiscall, 10 args
     using TexFlagsCtorFn = void(__fastcall*)(uint32_t* self, void* edx, int, int, int, int, int, int, int, int, int, int);
     constexpr uintptr_t kTexCallback    = 0x005EEB70; // the no-op the shadow cache passes
+    constexpr uintptr_t kTextureRelease = 0x0047BF30; // __cdecl(HTEXTURE): drops a handle reference
+    using TextureReleaseFn = void(__cdecl*)(void* handle);
     constexpr uintptr_t kBindTarget     = 0x0057E4F0; // __cdecl(slot, CGxTex*, face): engine render-target bind
     using BindTargetFn = void(__cdecl*)(int slot, void* gxTex, int face);
     constexpr uintptr_t kReadTarget     = 0x00682D50; // __thiscall(device, slot, CGxTex** out)
@@ -61,9 +67,16 @@ namespace
     constexpr size_t   kOffWindowHeight = 0x17C; // CGxDevice current window (DeviceCurWindow = +0x174), floats
     constexpr size_t   kOffWindowWidth  = 0x180;
 
+    constexpr uint32_t kMaxLights = WXL_OMNISHADOWS_MAX_V3;
+
     struct Light
     {
         WXL_OmniLight params{};
+        uint32_t flags    = 0;         // WXL_OMNI_CASTERS_* | WXL_OMNI_REDRAW_OCCUPIED (0: every caster, as v2)
+        uint32_t faceMask = 0x3F;      // faces rendered
+        uint32_t wantSize = 0;         // face size asked for (0: the default)
+        uint32_t occupied = 0;         // bit f: face f held a unit when last rendered
+        uint32_t seen     = 0;         // bit f: face f sees a unit this frame
         void*    colour = nullptr;   // HTEXTURE
         uint32_t size   = 0;
         WXL_OmniShadow state{};
@@ -78,12 +91,16 @@ namespace
         void*    d3dSeen     = nullptr; // D3D texture the contents belong to
     };
 
-    Light    g_lights[WXL_OMNISHADOWS_MAX];
+    Light    g_lights[kMaxLights];
     uint32_t g_count      = 0;
     uint32_t g_budget     = 6;
     uint32_t g_faceSize   = 512;
-    void*    g_depth      = nullptr; // HTEXTURE, shared D24X8 atlas
-    uint32_t g_depthSize  = 0;
+    // Shared D24X8 atlases, one per face size in use (64, 128, 256, 512, 1024).
+    void*    g_depths[5]  = {};
+    const void* g_owner   = nullptr; // the claim's holder; null while free
+    uint32_t g_facesLast  = 0;       // faces rendered on the last frame
+    uint32_t g_staticHash = 0;       // the engine's static casters this frame, as a set
+    uint32_t g_staticSeen = 0;       // the set static maps were last refreshed for
     uint32_t g_generation = 1;
     uint32_t g_cursor     = 0;       // round-robin over (light, face)
     uint32_t g_lastFrame  = 0xFFFFFFFF;
@@ -162,22 +179,58 @@ namespace
     }
 
     // --- resources ----------------------------------------------------------------------------------
-    bool EnsureTargets()
+    // An atlas replaced (its face size changed) is released a few frames later: a consumer may have read
+    // its texture pointer before the world pass that replaced it, and imports it after.
+    struct Retired { void* handle; uint32_t frame; };
+    Retired  g_retired[kMaxLights * 2] = {};
+    constexpr uint32_t kRetireFrames = 4;
+
+    void Retire(void* handle, uint32_t frame)
     {
-        const uint32_t w = g_faceSize * kCols, h = g_faceSize * kRows;
+        for (Retired& r : g_retired)
+            if (!r.handle) { r = Retired{ handle, frame }; return; }
+        reinterpret_cast<TextureReleaseFn>(kTextureRelease)(handle);   // full: release at once
+    }
+
+    void ReleaseRetired(uint32_t frame)
+    {
+        for (Retired& r : g_retired)
+            if (r.handle && frame - r.frame >= kRetireFrames)
+            {
+                reinterpret_cast<TextureReleaseFn>(kTextureRelease)(r.handle);
+                r = Retired{};
+            }
+    }
+
+    uint32_t SizeOf(const Light& l) { return l.wantSize ? l.wantSize : g_faceSize; }
+
+    int DepthIndex(uint32_t size)
+    {
+        int i = 0;
+        for (uint32_t p = 64; p < size && i < 4; p *= 2) ++i;
+        return i;
+    }
+
+    void* DepthFor(uint32_t size) { return g_depths[DepthIndex(size)]; }
+
+    bool EnsureTargets(uint32_t frame)
+    {
+        ReleaseRetired(frame);
         bool changed = false;
-        if (!g_depth || g_depthSize != g_faceSize)
-        {
-            g_depth = CreateTarget(w, h, kFmtD24X8, true);
-            g_depthSize = g_faceSize;
-            changed = true;
-        }
         for (uint32_t i = 0; i < g_count; ++i)
         {
             Light& l = g_lights[i];
-            if (l.colour && l.size == g_faceSize) continue;
-            l.colour = CreateTarget(w, h, kFmtR32F, false);
-            l.size   = g_faceSize;
+            const uint32_t size = SizeOf(l);
+            void*& depth = g_depths[DepthIndex(size)];
+            if (!depth)
+            {
+                depth = CreateTarget(size * kCols, size * kRows, kFmtD24X8, true);
+                changed = true;
+            }
+            if (l.colour && l.size == size) continue;
+            if (l.colour) Retire(l.colour, frame);
+            l.colour = CreateTarget(size * kCols, size * kRows, kFmtR32F, false);
+            l.size   = size;
             std::memset(l.state.faceFrame, 0, sizeof l.state.faceFrame);
             l.needsClear = true;
             l.track.staleFaces = kAllFaces;
@@ -186,9 +239,11 @@ namespace
         if (changed)
         {
             ++g_generation;
-            WLOG_INFO("omni-shadows: atlases %ux%u for %u light(s), generation %u", w, h, g_count, g_generation);
+            WLOG_INFO("omni-shadows: atlases for %u light(s) (default face %u), generation %u", g_count, g_faceSize, g_generation);
         }
-        return g_depth != nullptr;
+        for (uint32_t i = 0; i < g_count; ++i)
+            if (!DepthFor(SizeOf(g_lights[i]))) return false;
+        return true;
     }
 
     /// True when the device's render target 0 is this light's atlas, at the atlas size and format, and
@@ -352,6 +407,81 @@ namespace
         return true;
     }
 
+    // --- caster classes -------------------------------------------------------------------------------
+    // The engine's M2 batch lists hold 12-byte entries {CM2Model*, batch, group} read through list[0]
+    // (array) and list[1] (count) by CM2Model::RenderModelBatchListShadowMap and RenderBatchShadowMap;
+    // a copy with a group of 1 per entry takes their plain, non-instanced path. An entry is dynamic
+    // when the root of its model's attachment chain is a unit's body model.
+    struct Entry { uint32_t model, batch, group; };
+    struct List  { uint32_t data, count, capacity; };
+
+    std::vector<Entry> g_split[4];      // static opaque, static alpha, dynamic opaque, dynamic alpha
+    List     g_lists[4] = {};
+    uint32_t g_splitFrame = 0xFFFFFFFF;
+    std::vector<uintptr_t> g_unitRoots; // sorted body models of this frame's units
+
+    bool IsUnitModel(uintptr_t model)
+    {
+        for (int depth = 0; model && depth < 8; ++depth)
+        {
+            void* parent = wxl::game::unit::ModelParent(reinterpret_cast<void*>(model));
+            if (!parent) break;
+            model = reinterpret_cast<uintptr_t>(parent);
+        }
+        size_t lo = 0, hi = g_unitRoots.size();
+        while (lo < hi)
+        {
+            const size_t mid = (lo + hi) / 2;
+            if (g_unitRoots[mid] < model) lo = mid + 1; else hi = mid;
+        }
+        return lo < g_unitRoots.size() && g_unitRoots[lo] == model;
+    }
+
+    uint32_t Mix(uint32_t h);
+
+    /// Splits this frame's main-pass M2 lists by class, once per frame, and hashes the static set.
+    void SplitCasters(int slot, uint32_t frame)
+    {
+        if (g_splitFrame == frame) return;
+        g_splitFrame = frame;
+        namespace world = wxl::game::world;
+        g_unitRoots.clear();
+        world::ForEachObject(world::kTypeMaskUnit, [&](unsigned long long, void* unit) {
+            if (void* m = wxl::game::unit::Model(unit)) g_unitRoots.push_back(reinterpret_cast<uintptr_t>(m));
+            return true;
+        });
+        std::sort(g_unitRoots.begin(), g_unitRoots.end());
+        const uint32_t* list = reinterpret_cast<const uint32_t*>(off::kDrawLists + slot * off::kDrawListStride);
+        uint32_t hash = Mix(list[0] ^ Mix(list[1] ^ Mix(list[2])));
+        for (int kind = 0; kind < 2; ++kind)   // 0 opaque (list + 3), 1 alpha (list + 6)
+        {
+            std::vector<Entry>& st = g_split[kind];
+            std::vector<Entry>& dy = g_split[2 + kind];
+            st.clear();
+            dy.clear();
+            const uint32_t* src = list + (kind ? 6 : 3);
+            const Entry* entries = reinterpret_cast<const Entry*>(uintptr_t(src[0]));
+            const uint32_t count = entries ? src[1] : 0;
+            for (uint32_t i = 0; i < count; ++i)
+            {
+                Entry e = entries[i];
+                e.group = 1;
+                if (IsUnitModel(e.model)) dy.push_back(e);
+                else
+                {
+                    st.push_back(e);
+                    hash += Mix(e.model ^ (e.batch << 16));
+                }
+            }
+        }
+        for (int k = 0; k < 4; ++k)
+        {
+            const uint32_t n = uint32_t(g_split[k].size());
+            g_lists[k] = List{ n ? uint32_t(uintptr_t(g_split[k].data())) : 0u, n, n };
+        }
+        g_staticHash = hash;
+    }
+
     // --- the pass ------------------------------------------------------------------------------------
     const float kAxes[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
     const float kUps[6][3]  = { { 0, 0, 1 }, { 0, 0, 1 }, { 0, 0, 1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
@@ -392,7 +522,7 @@ namespace
         auto bindAtlas = [&](Light& l)
         {
             clearState(0x1E0, 0x14);
-            reinterpret_cast<BindTargetFn>(kBindTarget)(1, GxOf(g_depth), 0);
+            reinterpret_cast<BindTargetFn>(kBindTarget)(1, GxOf(DepthFor(l.size)), 0);
             Vt<void(__fastcall*)(void*, void*, int, void*, int)>(dev, 0x5C)(dev, nullptr, 0, GxOf(l.colour), 0);
         };
 
@@ -438,7 +568,26 @@ namespace
                 for (int col = 0; col < 4; ++col) t[row * 4 + col] = rebase[col * 4 + row];
             Vt<off::SetConstantsFn>(dev, off::kVtConstants)(dev, nullptr, 0, 14, t, 3);
 
-            if (anything)
+            const uint32_t classes = l.flags & (WXL_OMNI_CASTERS_STATIC | WXL_OMNI_CASTERS_DYNAMIC);
+            if (anything && classes && classes != (WXL_OMNI_CASTERS_STATIC | WXL_OMNI_CASTERS_DYNAMIC))
+            {
+                const bool wantStatic = classes == WXL_OMNI_CASTERS_STATIC;
+                if (wantStatic && list[0])
+                    reinterpret_cast<off::RenderWmoShadowFn>(off::kRenderWmoShadow)(
+                        list[1], list[0], list[2], toCamRel,
+                        reinterpret_cast<uint8_t*>(query) + off::kOffQueryFrustum + slot * off::kQueryFrustumStride);
+                List& opaque = g_lists[wantStatic ? 0 : 2];
+                List& alpha = g_lists[wantStatic ? 1 : 3];
+                if (opaque.count || alpha.count)
+                {
+                    uint32_t& maxO = *reinterpret_cast<uint32_t*>(off::kMaxOpaqueBatches);
+                    uint32_t& maxA = *reinterpret_cast<uint32_t*>(off::kMaxAlphaBatches);
+                    if (maxO < opaque.count) maxO = opaque.count;
+                    if (maxA < alpha.count) maxA = alpha.count;
+                    reinterpret_cast<off::RenderM2ShadowFn>(off::kRenderM2Shadow)(&opaque, &alpha);
+                }
+            }
+            else if (anything)
             {
                 if (list[0])
                     reinterpret_cast<off::RenderWmoShadowFn>(off::kRenderWmoShadow)(
@@ -474,7 +623,9 @@ namespace
             std::memcpy(l.state.position, l.params.position, sizeof l.state.position);
             l.state.radius = r;
             l.track.staleFaces &= ~(1u << f);
+            l.occupied = (l.occupied & ~(1u << f)) | (l.seen & (1u << f));
             ++g_faces;
+            ++g_facesLast;
             return true;
         };
 
@@ -489,7 +640,8 @@ namespace
             l.d3dSeen = D3dOf(l.colour);
         }
 
-        // Moved lights (all six faces) and faces whose casters moved first, outside the budget.
+        // Moved lights (all six faces) and faces whose casters moved first, outside the budget. Faces a
+        // light leaves out are never drawn: they keep the clear value, lit.
         for (uint32_t i = 0; i < g_count && !refused; ++i)
         {
             Light& l = g_lights[i];
@@ -497,7 +649,7 @@ namespace
             ++moving;
             for (int f = 0; f < 6; ++f)
             {
-                if (!(l.dirtyFaces & (1u << f))) continue;
+                if (!(l.dirtyFaces & l.faceMask & (1u << f))) continue;
                 if (!renderFace(l, f)) { refused = true; break; }
                 ++priorityFaces;
             }
@@ -509,15 +661,21 @@ namespace
             }
         }
 
-        // Static lights keep the round-robin with what the budget has left (at least one face).
+        // Still lights keep the round-robin with what the budget has left (at least one face). A light
+        // of static casters only takes part while its faces are stale (the static set changed); one
+        // of units only never does: its faces are redrawn when they see a unit.
         uint32_t budget = g_budget > priorityFaces ? g_budget - priorityFaces : 1;
         for (uint32_t tries = 0; !refused && budget && tries < g_count * 6;
              ++tries, g_cursor = (g_cursor + 1) % (g_count * 6))
         {
             Light& l = g_lights[g_cursor / 6];
-            if (!l.colour || l.priority) continue;
+            const int f = int(g_cursor % 6);
+            if (!l.colour || l.priority || !(l.faceMask & (1u << f))) continue;
+            const uint32_t classes = l.flags & (WXL_OMNI_CASTERS_STATIC | WXL_OMNI_CASTERS_DYNAMIC);
+            if (classes == WXL_OMNI_CASTERS_DYNAMIC) continue;
+            if (classes == WXL_OMNI_CASTERS_STATIC && !(l.track.staleFaces & (1u << f))) continue;
             --budget;
-            if (!renderFace(l, int(g_cursor % 6))) { refused = true; break; }
+            if (!renderFace(l, f)) { refused = true; break; }
             ++robinFaces;
         }
         for (uint32_t i = 0; i < g_count; ++i) { g_lights[i].priority = false; g_lights[i].dirtyFaces = 0; }
@@ -574,12 +732,15 @@ namespace
     }
 
     /// Marks each light's faces for a refresh: all six when it moved past the threshold, else those
-    /// whose units (as a face sees them) moved or turned.
+    /// whose units (as a face sees them) moved or turned. By class: static casters only follow the
+    /// engine's static set (stale faces, refreshed in turn); units only redraw the faces that see a unit
+    /// (or saw one when last drawn) when asked to, every frame.
     void UpdateTracking(uint32_t frame)
     {
         namespace world = wxl::game::world;
         constexpr float kBodyReach = 1.5f;  // a unit's extent around its centre, a yard above its feet
-        uint32_t hashes[WXL_OMNISHADOWS_MAX][6] = {};
+        uint32_t hashes[kMaxLights][6] = {};
+        uint32_t seen[kMaxLights] = {};
         // One walk over the units; each hashes its position (0.05 yd grid) and facing into every
         // face of every light that sees it. Summed, so the walk order does not matter.
         world::ForEachObject(world::kTypeMaskUnit, [&](unsigned long long guid, void* unit) {
@@ -598,24 +759,37 @@ namespace
                 const float r = l.params.radius + 2.0f; // + a body's reach
                 if (v[0] * v[0] + v[1] * v[1] + v[2] * v[2] > r * r) continue;
                 const uint32_t faces = FacesTouched(v, kBodyReach);
+                seen[i] |= faces;
                 for (int f = 0; f < 6; ++f)
                     if (faces & (1u << f)) hashes[i][f] += h;
             }
             return true;
         });
 
+        const bool staticChanged = g_staticHash != g_staticSeen;
+        g_staticSeen = g_staticHash;
         for (uint32_t i = 0; i < g_count; ++i)
         {
             Light& l = g_lights[i];
+            l.seen = seen[i];
             const float dx = l.params.position[0] - l.anchor[0], dy = l.params.position[1] - l.anchor[1],
                         dz = l.params.position[2] - l.anchor[2];
             const bool moved = dx * dx + dy * dy + dz * dz > kMoveThreshold * kMoveThreshold ||
                                std::fabs(l.params.radius - l.anchorRadius) > kMoveThreshold;
             uint32_t dirty = moved || l.needsClear ? kAllFaces : 0;
-            for (int f = 0; f < 6; ++f)
-                if (l.haveCasters && hashes[i][f] != l.casters[f]) dirty |= 1u << f;
+            const uint32_t classes = l.flags & (WXL_OMNI_CASTERS_STATIC | WXL_OMNI_CASTERS_DYNAMIC);
+            if (classes == WXL_OMNI_CASTERS_STATIC)
+            {
+                if (staticChanged) l.track.staleFaces |= l.faceMask;
+            }
+            else if (classes == WXL_OMNI_CASTERS_DYNAMIC && (l.flags & WXL_OMNI_REDRAW_OCCUPIED))
+                dirty |= seen[i] | l.occupied;
+            else
+                for (int f = 0; f < 6; ++f)
+                    if (l.haveCasters && hashes[i][f] != l.casters[f]) dirty |= 1u << f;
             std::memcpy(l.casters, hashes[i], sizeof l.casters);
             l.haveCasters = true;
+            dirty &= l.faceMask;
             if (dirty)
             {
                 l.priority = true;
@@ -624,6 +798,16 @@ namespace
                 l.track.lastMovedFrame = frame;
             }
         }
+    }
+
+    bool AnyClassed()
+    {
+        for (uint32_t i = 0; i < g_count; ++i)
+        {
+            const uint32_t c = g_lights[i].flags & (WXL_OMNI_CASTERS_STATIC | WXL_OMNI_CASTERS_DYNAMIC);
+            if (c && c != (WXL_OMNI_CASTERS_STATIC | WXL_OMNI_CASTERS_DYNAMIC)) return true;
+        }
+        return false;
     }
 
     /// Runs after each stock shadow render; acts once per frame, on the main exterior pass.
@@ -642,11 +826,13 @@ namespace
         const uint32_t frame = sc ? *reinterpret_cast<const uint32_t*>(sc + wxl::offsets::game::lights::kOffSceneFrame) : 0;
         if (frame == g_lastFrame) return;
         g_lastFrame = frame;
+        g_facesLast = 0;
 
         __try
         {
-            if (EnsureTargets())
+            if (EnsureTargets(frame))
             {
+                if (AnyClassed()) SplitCasters(int(a.arg[1]), frame);
                 UpdateTracking(frame);
                 RenderFaces(reinterpret_cast<void*>(a.arg[0]), int(a.arg[1]), frame);
             }
@@ -663,7 +849,7 @@ namespace
 
     // --- interface -----------------------------------------------------------------------------------
     /// Resets a slot for a different light: its atlas (kept, not recreated) is cleared before use.
-    void Reassign(Light& l, const WXL_OmniLightEx& in)
+    void Reassign(Light& l, const WXL_OmniLightV3& in)
     {
         std::memset(l.state.faceFrame, 0, sizeof l.state.faceFrame);
         l.track = WXL_OmniShadowState{};
@@ -673,24 +859,32 @@ namespace
         l.anchorRadius = in.radius;
         l.haveCasters = false;
         l.needsClear  = true;
+        l.occupied    = 0;
     }
 
-    void __cdecl ApiSetLightsEx(const WXL_OmniLightEx* lights, uint32_t count)
+    uint32_t PowerOfTwoFace(uint32_t size)
+    {
+        uint32_t p = 64;
+        while (p * 2 <= size && p < 1024) p *= 2; // power of two, so the atlas is one too
+        return p;
+    }
+
+    void SetLights(const WXL_OmniLightV3* lights, uint32_t count, uint32_t max)
     {
         if (!g_enabled) return;
         g_lastSet = GetTickCount64();
         if (!lights) count = 0;
-        if (count > WXL_OMNISHADOWS_MAX) count = WXL_OMNISHADOWS_MAX;
+        if (count > max) count = max;
 
         // Each incoming light keeps its slot's state (atlas included) when it is the same light:
         // same nonzero id, or with id 0, same index and within its radius of where it was.
-        Light next[WXL_OMNISHADOWS_MAX];
-        bool taken[WXL_OMNISHADOWS_MAX] = {};
-        int  from[WXL_OMNISHADOWS_MAX];
+        Light next[kMaxLights];
+        bool taken[kMaxLights] = {};
+        int  from[kMaxLights];
         for (uint32_t i = 0; i < count; ++i)
         {
             from[i] = -1;
-            const WXL_OmniLightEx& in = lights[i];
+            const WXL_OmniLightV3& in = lights[i];
             for (uint32_t j = 0; j < g_count && from[i] < 0; ++j)
             {
                 const Light& o = g_lights[j];
@@ -704,31 +898,64 @@ namespace
             }
             if (from[i] >= 0) taken[from[i]] = true;
         }
-        uint32_t spare = 0;
         for (uint32_t i = 0; i < count; ++i)
         {
             if (from[i] >= 0) { next[i] = g_lights[from[i]]; continue; }
-            while (taken[spare]) ++spare;  // a slot nobody keeps: reuse its atlas
+            // A slot nobody keeps: reuse its atlas, one of the asked size first (no reallocation).
+            const uint32_t want = lights[i].faceSize ? PowerOfTwoFace(lights[i].faceSize) : g_faceSize;
+            uint32_t spare = kMaxLights;
+            for (uint32_t j = 0; j < kMaxLights && spare == kMaxLights; ++j)
+                if (!taken[j] && g_lights[j].colour && g_lights[j].size == want) spare = j;
+            for (uint32_t j = 0; j < kMaxLights && spare == kMaxLights; ++j)
+                if (!taken[j]) spare = j;
             taken[spare] = true;
             next[i] = g_lights[spare];
             Reassign(next[i], lights[i]);
         }
-        for (uint32_t k = count, s = 0; k < WXL_OMNISHADOWS_MAX; ++k) // unused slots keep their atlases
+        for (uint32_t k = count, s = 0; k < kMaxLights; ++k) // unused slots keep their atlases
         {
-            while (s < WXL_OMNISHADOWS_MAX && taken[s]) ++s;
-            if (s < WXL_OMNISHADOWS_MAX) { next[k] = g_lights[s]; taken[s] = true; next[k].needsClear = true; }
+            while (s < kMaxLights && taken[s]) ++s;
+            if (s < kMaxLights) { next[k] = g_lights[s]; taken[s] = true; next[k].needsClear = true; }
         }
-        for (uint32_t i = 0; i < WXL_OMNISHADOWS_MAX; ++i) g_lights[i] = next[i];
+        for (uint32_t i = 0; i < kMaxLights; ++i) g_lights[i] = next[i];
         for (uint32_t i = 0; i < count; ++i)
         {
-            std::memcpy(g_lights[i].params.position, lights[i].position, sizeof g_lights[i].params.position);
-            g_lights[i].params.radius = lights[i].radius;
-            g_lights[i].track.id = lights[i].id;
+            Light& l = g_lights[i];
+            const WXL_OmniLightV3& in = lights[i];
+            const uint32_t classes = in.flags & (WXL_OMNI_CASTERS_STATIC | WXL_OMNI_CASTERS_DYNAMIC);
+            const uint32_t mask = (in.faceMask & kAllFaces) ? (in.faceMask & kAllFaces) : kAllFaces;
+            // A light whose classes or faces change is a different map: drawn again from clear.
+            if ((l.flags & (WXL_OMNI_CASTERS_STATIC | WXL_OMNI_CASTERS_DYNAMIC)) != classes || l.faceMask != mask)
+            {
+                l.needsClear = true;
+                l.occupied = 0;
+            }
+            std::memcpy(l.params.position, in.position, sizeof l.params.position);
+            l.params.radius = in.radius;
+            l.track.id = in.id;
+            l.flags = in.flags;
+            l.faceMask = mask;
+            l.wantSize = in.faceSize ? PowerOfTwoFace(in.faceSize) : 0;
         }
 
         g_count = count;
         if (g_cursor >= g_count * 6) g_cursor = 0;
         if (!g_chained && g_count) g_chained = sh::ChainAfter(sh::Callback::Render, &AfterRender, nullptr);
+    }
+
+    void __cdecl ApiSetLightsEx(const WXL_OmniLightEx* lights, uint32_t count)
+    {
+        if (g_owner) return;   // claimed: accepted, ignored
+        WXL_OmniLightV3 v3[WXL_OMNISHADOWS_MAX] = {};
+        if (!lights) count = 0;
+        if (count > WXL_OMNISHADOWS_MAX) count = WXL_OMNISHADOWS_MAX;
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            std::memcpy(v3[i].position, lights[i].position, sizeof v3[i].position);
+            v3[i].radius = lights[i].radius;
+            v3[i].id = lights[i].id;
+        }
+        SetLights(lights ? v3 : nullptr, count, WXL_OMNISHADOWS_MAX);
     }
 
     void __cdecl ApiSetLights(const WXL_OmniLight* lights, uint32_t count)
@@ -751,12 +978,16 @@ namespace
         return 1;
     }
 
-    void __cdecl ApiSetBudget(uint32_t faces) { g_budget = faces ? faces : 1; }
+    void __cdecl ApiSetBudget(uint32_t faces)
+    {
+        if (g_owner) return;
+        g_budget = faces ? faces : 1;
+    }
+
     void __cdecl ApiSetFaceSize(uint32_t size)
     {
-        uint32_t p = 64;
-        while (p * 2 <= size && p < 1024) p *= 2; // power of two, so the atlas is one too
-        g_faceSize = p;
+        if (g_owner) return;
+        g_faceSize = PowerOfTwoFace(size);
     }
 
     int __cdecl ApiGet(uint32_t index, WXL_OmniShadow* out)
@@ -773,10 +1004,46 @@ namespace
     uint32_t __cdecl ApiCount() { return g_count; }
     uint32_t __cdecl ApiGeneration() { return g_generation; }
 
+    int __cdecl ApiClaim(const void* owner)
+    {
+        if (!owner) return 0;
+        if (g_owner && g_owner != owner) return 0;
+        if (!g_owner)
+        {
+            g_owner = owner;
+            g_count = 0;   // the previous driver's set goes; the owner sets its own
+            WLOG_INFO("omni-shadows: claimed; other drivers are ignored until it is released");
+        }
+        return 1;
+    }
+
+    void __cdecl ApiRelease(const void* owner)
+    {
+        if (!owner || g_owner != owner) return;
+        g_owner = nullptr;
+        g_count = 0;
+        WLOG_INFO("omni-shadows: released");
+    }
+
+    void __cdecl ApiSetLightsV3(const void* owner, const WXL_OmniLightV3* lights, uint32_t count)
+    {
+        if (g_owner && g_owner != owner) return;
+        SetLights(lights, count, kMaxLights);
+    }
+
+    void __cdecl ApiSetBudgetV3(const void* owner, uint32_t faces)
+    {
+        if (g_owner && g_owner != owner) return;
+        g_budget = faces ? faces : 1;
+    }
+
+    uint32_t __cdecl ApiFacesLastFrame() { return g_facesLast; }
+
     const WXL_OmniShadowsApi g_api = {
         sizeof(WXL_OmniShadowsApi), WXL_OMNISHADOWS_API_VERSION,
         &ApiSetLights, &ApiSetBudget, &ApiSetFaceSize, &ApiGet, &ApiCount, &ApiGeneration,
         &ApiSetLightsEx, &ApiGetState,
+        &ApiClaim, &ApiRelease, &ApiSetLightsV3, &ApiSetBudgetV3, &ApiFacesLastFrame,
     };
 
     // --- diagnostic: the scene-lights orb casts ------------------------------------------------------
@@ -814,8 +1081,10 @@ namespace
     {
         g_enabled = wxl::config::Env("WXL_OMNI_SHADOWS", true);
         if (!g_enabled) WLOG_INFO("omni-shadows: disabled (WXL_OMNI_SHADOWS=0)");
+        // The same table under v2 as well: a v2 caller reads only the fields it knows.
         wxl::runtime::extensions::PublishInterface("wxl.omnishadows", WXL_OMNISHADOWS_API_VERSION,
                                                    const_cast<WXL_OmniShadowsApi*>(&g_api));
+        wxl::runtime::extensions::PublishInterface("wxl.omnishadows", 2, const_cast<WXL_OmniShadowsApi*>(&g_api));
         g_diag = wxl::config::Env("WXL_DIAG_LIGHTS", false);
         if (g_diag) wxl::events::Subscribe(wxl::events::Event::OnUpdate, &OnUpdateDiag, nullptr);
         return true;

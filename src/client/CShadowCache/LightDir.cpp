@@ -1,5 +1,5 @@
 // Shadow light: lets one subscriber adjust the direction CShadowCache renders its sun maps along,
-// through a detour on CShadowCache::PreUpdate (0x00875C10). "wxl.shadowlight".
+// through a detour on CShadowCache::PreUpdate (0x00875C10). "wxl.shadowlight" v2 (also published as v1).
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -37,6 +37,7 @@ namespace
     bool                    g_hookFailed = false;
     float                   g_last[3] = {};
     bool                    g_haveLast = false;
+    const void*             g_owner = nullptr;   // the claim's holder; null while free
 
     void __cdecl PreUpdateDetour(const float* lightDir, const float* cameraPos)
     {
@@ -73,13 +74,46 @@ namespace
         return true;
     }
 
-    int __cdecl ApiSetAdjust(WXL_ShadowLightAdjustFn fn, void* user)
+    int Apply(WXL_ShadowLightAdjustFn fn, void* user)
     {
         if (!fn) { g_adjust = nullptr; g_user = nullptr; return 1; }
         if (!EnsureHook()) return 0;
         g_user   = user;
         g_adjust = fn;
         return 1;
+    }
+
+    int __cdecl ApiSetAdjust(WXL_ShadowLightAdjustFn fn, void* user)
+    {
+        if (g_owner) return 1;   // claimed: accepted, ignored
+        return Apply(fn, user);
+    }
+
+    int __cdecl ApiClaim(const void* owner)
+    {
+        if (!owner || (g_owner && g_owner != owner)) return 0;
+        if (!g_owner)
+        {
+            g_owner = owner;
+            g_adjust = nullptr;   // the previous adjuster goes; the owner installs its own
+            g_user = nullptr;
+            WLOG_INFO("shadow-light: claimed; other adjusters are ignored until it is released");
+        }
+        return 1;
+    }
+
+    void __cdecl ApiRelease(const void* owner)
+    {
+        if (!owner || g_owner != owner) return;
+        g_owner = nullptr;
+        g_adjust = nullptr;
+        g_user = nullptr;
+    }
+
+    int __cdecl ApiSetAdjustOwned(const void* owner, WXL_ShadowLightAdjustFn fn, void* user)
+    {
+        if (g_owner && g_owner != owner) return 0;
+        return Apply(fn, user);
     }
 
     int __cdecl ApiGetDirection(float dir[3])
@@ -89,12 +123,17 @@ namespace
         return 1;
     }
 
-    const WXL_ShadowLightApi g_api = { sizeof(WXL_ShadowLightApi), WXL_SHADOWLIGHT_API_VERSION, &ApiSetAdjust, &ApiGetDirection };
+    const WXL_ShadowLightApi g_api = {
+        sizeof(WXL_ShadowLightApi), WXL_SHADOWLIGHT_API_VERSION, &ApiSetAdjust, &ApiGetDirection,
+        &ApiClaim, &ApiRelease, &ApiSetAdjustOwned,
+    };
 
     bool InstallShadowLight()
     {
+        // The same table under v1 as well: a v1 caller reads only the fields it knows.
         wxl::runtime::extensions::PublishInterface("wxl.shadowlight", WXL_SHADOWLIGHT_API_VERSION,
                                                    const_cast<WXL_ShadowLightApi*>(&g_api));
+        wxl::runtime::extensions::PublishInterface("wxl.shadowlight", 1, const_cast<WXL_ShadowLightApi*>(&g_api));
         return true;
     }
 }

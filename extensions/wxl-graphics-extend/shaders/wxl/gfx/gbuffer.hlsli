@@ -1,4 +1,4 @@
-// wxl-graphics-extend: reading the world pass's G-buffer normal target.
+// wxl-graphics-extend: reading the world pass's G-buffer normal and albedo targets.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -41,6 +41,21 @@ bool WxlGBufferHasNormal(float a)
 bool WxlGBufferEngineLit(float a)
 {
     return a > 0.75;
+}
+
+// The A8R8G8B8 albedo target (WXL_GfxFrame::albedoTexture, WXL_GFX_NEED_ALBEDO):
+//   rgb  the material's colour before the vertex lighting, in the engine's gamma working space
+//   a    the material code v / 255: kind = v >> 6 (0 none, 1 model or grass, 2 building, 3 terrain),
+//        gloss = (v & 63) / 63 (the terrain's specular mask)
+float WxlGBufferKind(float a)
+{
+    return floor(floor(a * 255.0 + 0.5) / 64.0);
+}
+
+float WxlGBufferGloss(float a)
+{
+    float v = floor(a * 255.0 + 0.5);
+    return (v - 64.0 * floor(v / 64.0)) / 63.0;
 }
 
 #endif

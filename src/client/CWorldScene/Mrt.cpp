@@ -1,4 +1,4 @@
-// Mrt: render target 1 during the world pass, written only by pixel shaders that output oC1.
+// Mrt: render targets 1 and 2 during the world pass, each written only by pixel shaders that output it.
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -29,9 +29,10 @@
 // The engine only ever binds render target 0 (CGxDeviceD3d::DeviceSetRenderTarget 0x0068F770 calls
 // SetRenderTarget(0, ...) and re-binds the depth cached at device +0x3B40), so render target 1 would
 // stay bound through the shadow maps, glow and every other target switch inside the pass. D3D9 wants
-// every bound target the same size, so render target 1 is bound only while the world's own target 0
-// is. Shaders that do not write oC1 leave undefined values in a bound target, so its write mask
-// (COLORWRITEENABLE1) is opened only for shaders that write oC1, and never while blending.
+// every bound target the same size, so render targets 1 and 2 are bound only while the world's own
+// target 0 is. Shaders that do not write oCn leave undefined values in a bound target, so each write
+// mask (COLORWRITEENABLE1, COLORWRITEENABLE2) is opened only for shaders that write that output, and
+// never while blending.
 namespace wxl::runtime::mrt
 {
     namespace
@@ -39,6 +40,7 @@ namespace wxl::runtime::mrt
         namespace vt = wxl::offsets::engine::gx::vt;
 
         constexpr D3DRENDERSTATETYPE kWriteMask1 = static_cast<D3DRENDERSTATETYPE>(190); // COLORWRITEENABLE1
+        constexpr D3DRENDERSTATETYPE kWriteMask2 = static_cast<D3DRENDERSTATETYPE>(191); // COLORWRITEENABLE2
 
         using SetRenderTargetFn = HRESULT(__stdcall*)(IDirect3DDevice9*, DWORD, IDirect3DSurface9*);
         using ClearFn           = HRESULT(__stdcall*)(IDirect3DDevice9*, DWORD, const D3DRECT*, DWORD, D3DCOLOR, float, DWORD);
@@ -52,19 +54,22 @@ namespace wxl::runtime::mrt
         void**            g_hookedVtbl          = nullptr;
 
         bool               g_active   = false;  // inside a world pass that uses render target 1
-        bool               g_bound    = false;  // render target 1 currently bound
+        bool               g_bound    = false;  // render targets 1 (and 2) currently bound
         IDirect3DSurface9* g_world0   = nullptr;
         IDirect3DSurface9* g_target   = nullptr;
-        bool               g_psWrites = false;
+        IDirect3DSurface9* g_target2  = nullptr; // render target 2, null when not used this pass
+        uint32_t           g_psWrites = 0;      // bit n: the bound pixel shader writes oCn
         bool               g_blend    = false;
         DWORD              g_mask     = 0xFFFFFFFF;
+        DWORD              g_mask2    = 0xFFFFFFFF;
         uint32_t           g_capsState = 0;      // 0 unknown, 1 usable, 2 refused
 
-        std::unordered_map<IDirect3DPixelShader9*, bool> g_writesC1;
+        std::unordered_map<IDirect3DPixelShader9*, uint32_t> g_writes;
 
-        /// True when a ps_2_0+ token stream writes the colour output register 1 (oC1).
-        bool WritesC1(const DWORD* t, UINT bytes)
+        /// The colour outputs a ps_2_0+ token stream writes, bit n for oCn.
+        uint32_t WrittenOutputs(const DWORD* t, UINT bytes)
         {
+            uint32_t outputs = 0;
             const UINT n = bytes / 4;
             for (UINT i = 1; i < n;)
             {
@@ -77,49 +82,62 @@ namespace wxl::runtime::mrt
                 {
                     const DWORD d    = t[i + 1];
                     const DWORD type = ((d >> 28) & 0x7) | ((d >> 8) & 0x18);
-                    if (type == 8 && (d & 0x7FF) == 1) return true;      // D3DSPR_COLOROUT, index 1
+                    if (type == 8 && (d & 0x7FF) < 4) outputs |= 1u << (d & 0x7FF);   // D3DSPR_COLOROUT
                 }
                 i += 1 + len;
             }
-            return false;
+            return outputs;
         }
 
-        bool ShaderWritesC1(IDirect3DPixelShader9* ps)
+        uint32_t ShaderOutputs(IDirect3DPixelShader9* ps)
         {
-            if (!ps) return false;
-            auto it = g_writesC1.find(ps);
-            if (it != g_writesC1.end()) return it->second;
+            if (!ps) return 0;
+            auto it = g_writes.find(ps);
+            if (it != g_writes.end()) return it->second;
             UINT size = 0;
-            bool writes = false;
+            uint32_t outputs = 0;
             if (SUCCEEDED(ps->GetFunction(nullptr, &size)) && size >= 8 && size < (1u << 20))
             {
                 DWORD* buf = static_cast<DWORD*>(HeapAlloc(GetProcessHeap(), 0, size));
                 if (buf)
                 {
-                    if (SUCCEEDED(ps->GetFunction(buf, &size))) writes = WritesC1(buf, size);
+                    if (SUCCEEDED(ps->GetFunction(buf, &size))) outputs = WrittenOutputs(buf, size);
                     HeapFree(GetProcessHeap(), 0, buf);
                 }
             }
-            if (g_writesC1.size() > 20000) g_writesC1.clear();
-            g_writesC1.emplace(ps, writes);
-            return writes;
+            if (g_writes.size() > 20000) g_writes.clear();
+            g_writes.emplace(ps, outputs);
+            return outputs;
         }
 
         void UpdateMask(IDirect3DDevice9* d)
         {
             if (!g_active || !g_bound) return;
-            const DWORD want = (g_psWrites && !g_blend) ? 0xF : 0;
-            if (want == g_mask) return;
-            g_mask = want;
-            g_origSetRenderState(d, kWriteMask1, want);
+            const DWORD want = ((g_psWrites & 2u) && !g_blend) ? 0xF : 0;
+            if (want != g_mask)
+            {
+                g_mask = want;
+                g_origSetRenderState(d, kWriteMask1, want);
+            }
+            if (!g_target2) return;
+            const DWORD want2 = ((g_psWrites & 4u) && !g_blend) ? 0xF : 0;
+            if (want2 != g_mask2)
+            {
+                g_mask2 = want2;
+                g_origSetRenderState(d, kWriteMask2, want2);
+            }
         }
 
         void Bind(IDirect3DDevice9* d, bool on)
         {
             if (on == g_bound) return;
+            // Render target 2 goes on after 1 and comes off before it: the bound targets stay contiguous.
+            if (!on && g_target2) g_origSetRenderTarget(d, 2, nullptr);
             g_origSetRenderTarget(d, 1, on ? g_target : nullptr);
+            if (on && g_target2) g_origSetRenderTarget(d, 2, g_target2);
             g_bound = on;
             g_mask  = 0xFFFFFFFF;
+            g_mask2 = 0xFFFFFFFF;
             UpdateMask(d);
         }
 
@@ -137,9 +155,11 @@ namespace wxl::runtime::mrt
             // The engine's colour clears are meant for its own target only.
             if (g_active && g_bound && (flags & D3DCLEAR_TARGET))
             {
+                if (g_target2) g_origSetRenderTarget(d, 2, nullptr);
                 g_origSetRenderTarget(d, 1, nullptr);
                 const HRESULT hr = g_origClear(d, count, rects, flags, color, z, stencil);
                 g_origSetRenderTarget(d, 1, g_target);
+                if (g_target2) g_origSetRenderTarget(d, 2, g_target2);
                 return hr;
             }
             return g_origClear(d, count, rects, flags, color, z, stencil);
@@ -161,7 +181,7 @@ namespace wxl::runtime::mrt
             const HRESULT hr = g_origSetPixelShader(d, ps);
             if (g_active)
             {
-                g_psWrites = ShaderWritesC1(ps);
+                g_psWrites = ShaderOutputs(ps);
                 UpdateMask(d);
             }
             return hr;
@@ -185,7 +205,7 @@ namespace wxl::runtime::mrt
                 Swap(vtbl, vt::kClear,           &hkClear,           &g_origClear);
                 Swap(vtbl, vt::kSetRenderState,  &hkSetRenderState,  &g_origSetRenderState);
                 Swap(vtbl, vt::kSetPixelShader,  &hkSetPixelShader,  &g_origSetPixelShader);
-                g_writesC1.clear();
+                g_writes.clear();
             }
             g_hookedVtbl = vtbl;
         }
@@ -213,8 +233,9 @@ namespace wxl::runtime::mrt
         int                g_diagOn = -1;
     }
 
-    bool Begin(void* device, void* target)
+    bool Begin(void* device, void* target, void* target2, bool* albedoBound)
     {
+        if (albedoBound) *albedoBound = false;
         auto* d = static_cast<IDirect3DDevice9*>(device);
         auto* t = static_cast<IDirect3DSurface9*>(target);
         if (!d || !t || !CheckCaps(d)) return false;
@@ -237,22 +258,46 @@ namespace wxl::runtime::mrt
             return false;
         }
 
+        // Render target 2 under the same rules: the world target's size, no multisampling, and three
+        // simultaneous targets. Refused, the pass runs with render target 1 alone.
+        auto* t2 = static_cast<IDirect3DSurface9*>(target2);
+        if (t2)
+        {
+            D3DSURFACE_DESC c{};
+            t2->GetDesc(&c);
+            const bool ok2 = caps.NumSimultaneousRTs >= 3 && c.Width == a.Width && c.Height == a.Height
+                          && c.MultiSampleType == D3DMULTISAMPLE_NONE
+                          && (a.Format == c.Format || (caps.PrimitiveMiscCaps & D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS));
+            if (!ok2)
+            {
+                static bool logged2 = false;
+                if (!logged2) { logged2 = true; WLOG_WARN("mrt: render target 2 %ux%u ms%d refused (world target %ux%u, %lu targets)",
+                                                          c.Width, c.Height, c.MultiSampleType, a.Width, a.Height, caps.NumSimultaneousRTs); }
+                t2 = nullptr;
+            }
+        }
+
         EnsureHooks(d);
         d->ColorFill(t, nullptr, D3DCOLOR_ARGB(0, 0, 0, 0));
+        if (t2) d->ColorFill(t2, nullptr, D3DCOLOR_ARGB(0, 0, 0, 0));
 
-        g_world0 = rt0;
-        g_target = t;
-        g_active = true;
-        g_bound  = false;
+        g_world0  = rt0;
+        g_target  = t;
+        g_target2 = t2;
+        g_active  = true;
+        g_bound   = false;
         DWORD blend = 0;
         g_blend = SUCCEEDED(d->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend)) && blend;
         IDirect3DPixelShader9* ps = nullptr;
-        if (SUCCEEDED(d->GetPixelShader(&ps)) && ps) { g_psWrites = ShaderWritesC1(ps); ps->Release(); }
-        else g_psWrites = false;
+        if (SUCCEEDED(d->GetPixelShader(&ps)) && ps) { g_psWrites = ShaderOutputs(ps); ps->Release(); }
+        else g_psWrites = 0;
         Bind(d, true);
+        if (albedoBound) *albedoBound = t2 != nullptr;
 
         static bool announced = false;
         if (!announced) { announced = true; WLOG_INFO("mrt: render target 1 bound for the world pass (%ux%u)", b.Width, b.Height); }
+        static bool announced2 = false;
+        if (t2 && !announced2) { announced2 = true; WLOG_INFO("mrt: render target 2 bound for the world pass (%ux%u)", b.Width, b.Height); }
         return true;
     }
 
@@ -262,10 +307,13 @@ namespace wxl::runtime::mrt
         if (!g_active || !d) return;
         Bind(d, false);
         g_origSetRenderState(d, kWriteMask1, 0xF);
-        g_mask   = 0xFFFFFFFF;
-        g_active = false;
-        g_world0 = nullptr;
-        g_target = nullptr;
+        if (g_target2) g_origSetRenderState(d, kWriteMask2, 0xF);
+        g_mask    = 0xFFFFFFFF;
+        g_mask2   = 0xFFFFFFFF;
+        g_active  = false;
+        g_world0  = nullptr;
+        g_target  = nullptr;
+        g_target2 = nullptr;
     }
 
     void* DiagTarget(void* device)
@@ -298,7 +346,7 @@ namespace wxl::runtime::mrt
     void OnDeviceLost()
     {
         if (g_diagTex) { g_diagTex->Release(); g_diagTex = nullptr; }
-        g_writesC1.clear();
+        g_writes.clear();
     }
 
     void DiagShow(void* device, void* target)

@@ -280,16 +280,19 @@ namespace
         IDirect3DSurface9* depthOverride = nullptr;
         IDirect3DSurface9* normalTarget  = nullptr;
         IDirect3DSurface9* colorOverride = nullptr;
+        IDirect3DSurface9* albedoTarget  = nullptr;
         if (d && sceneDepth && ev::Any(ev::Event::OnWorldSceneBegin))
         {
             void* requested = nullptr;
             void* normals   = nullptr;
             void* color     = nullptr;
-            ev::WorldSceneBeginArgs b{ d, sceneDepth, &requested, &normals, &color };
+            void* albedo    = nullptr;
+            ev::WorldSceneBeginArgs b{ d, sceneDepth, &requested, &normals, &color, &albedo };
             ev::Emit(ev::Event::OnWorldSceneBegin, &b);
             depthOverride = static_cast<IDirect3DSurface9*>(requested);
             normalTarget  = static_cast<IDirect3DSurface9*>(normals);
             colorOverride = static_cast<IDirect3DSurface9*>(color);
+            albedoTarget  = static_cast<IDirect3DSurface9*>(albedo);
         }
         if (d && !normalTarget) normalTarget = static_cast<IDirect3DSurface9*>(wxl::runtime::mrt::DiagTarget(d));
 
@@ -299,7 +302,8 @@ namespace
         void* engineColor = colorOverride ? BeginColorOverride(d, colorOverride) : nullptr;
         if (!engineColor) colorOverride = nullptr;
 
-        const bool mrt = normalTarget && wxl::runtime::mrt::Begin(d, normalTarget);
+        bool albedoBound = false;
+        const bool mrt = normalTarget && wxl::runtime::mrt::Begin(d, normalTarget, albedoTarget, &albedoBound);
 
         g_origWorldScene(worldFrame, edx);
 
@@ -311,7 +315,8 @@ namespace
         if (ev::Any(ev::Event::OnWorldSceneEnd))
         {
             ev::WorldSceneEndArgs a{ gx::RawDevice(), depthOverride ? depthOverride : sceneDepth,
-                                     mrt ? normalTarget : nullptr, colorOverride, &resolved };
+                                     mrt ? normalTarget : nullptr, colorOverride, &resolved,
+                                     mrt && albedoBound ? albedoTarget : nullptr };
             ev::Emit(ev::Event::OnWorldSceneEnd, &a);
         }
         if (colorOverride && !resolved)

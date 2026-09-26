@@ -67,3 +67,5 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+# DXVK ships with this extension (the client loads it through the d3d9 proxy).
+!dxvk/d3d9.dll

@@ -1,0 +1,36 @@
+{
+  "manifest": 1,
+
+  "extension": {
+    "id": "wxl-graphics-fog",
+    "version": "0.3.0",
+    "abi": "1.1",
+    "entry": "wxl-graphics-fog.dll",
+    "assets": [],
+    "requires": {
+      "wxl-graphics-extend": "0.1.0",
+      "wxl-graphics-lights": "0.1.0"
+    },
+    "conflicts": [],
+
+    "hooks": []
+  },
+
+  "deploy": {
+    "mode": "release",
+    "match": "*.dll"
+  },
+
+  "listing": {
+    "title": "Graphics Fog",
+    "tagline": "A living, simulated fog that lies in the land, runs down it in rivers, reaches the horizon, and answers to gameplay.",
+    "description": "store/description.md",
+    "cover": null,
+    "gallery": [],
+    "categories": ["rendering", "gameplay"],
+    "accent": "#7d8a80"
+  },
+
+  "license": "GPL-3.0-or-later",
+  "signature": null
+}

@@ -17,6 +17,7 @@
 #include "Scheduler.hpp"
 #include "SceneTargets.hpp"
 #include "../core/Extension.hpp"
+#include "../vulkan/Vulkan.hpp"
 
 #include "wxl/EventScript.hpp"
 #include "wxl/gfx/GpuTimer.hpp"
@@ -103,7 +104,7 @@ namespace
 
     struct Config
     {
-        uint32_t supply  = WXL_GFX_NEED_DEPTH | WXL_GFX_NEED_NORMALS | WXL_GFX_NEED_HDR;  // needs the service arranges
+        uint32_t supply  = WXL_GFX_NEED_DEPTH | WXL_GFX_NEED_NORMALS | WXL_GFX_NEED_HDR | WXL_GFX_NEED_ALBEDO;  // needs the service arranges
         bool     profile = true;
     } g_cfg;
 
@@ -230,7 +231,9 @@ namespace
             g_currentValid = false;
             g_active = false;
 
-            uint32_t requested = 0;
+            // The Vulkan side probes DXVK once per device; its compute passes join the request.
+            wxl::gfx::vulkan::OnDevice(a.device);
+            uint32_t requested = wxl::gfx::vulkan::PollWants();
             {
                 Iteration guard;
                 for (std::unique_ptr<Pass>& p : g_passes)
@@ -240,6 +243,8 @@ namespace
                     requested |= p->lastWants;
                 }
             }
+            // The albedo target is only bound beside the normals.
+            if (requested & WXL_GFX_NEED_ALBEDO) requested |= WXL_GFX_NEED_NORMALS;
             g_lastRequested = requested;
             g_lastAvailable = 0;
             if (!requested) return;
@@ -290,6 +295,15 @@ namespace
                 {
                     *a.normalTarget = s;
                     supplied |= WXL_GFX_NEED_NORMALS;
+                }
+            }
+            if ((wanted & WXL_GFX_NEED_ALBEDO) && (supplied & WXL_GFX_NEED_NORMALS) && scene::ThreeTargets())
+            {
+                if (*a.albedoTarget) supplied |= WXL_GFX_NEED_ALBEDO;
+                else if (IDirect3DSurface9* s = scene::Ensure(scene::Kind::Albedo, dev, dd.Width, dd.Height))
+                {
+                    *a.albedoTarget = s;
+                    supplied |= WXL_GFX_NEED_ALBEDO;
                 }
             }
 
@@ -382,6 +396,14 @@ namespace
                     available |= WXL_GFX_NEED_NORMALS;
                 }
             }
+            if ((wanted & WXL_GFX_NEED_ALBEDO) && a.albedoTarget)
+            {
+                if (IDirect3DTexture9* t = TargetTexture(scene::Kind::Albedo, a.albedoTarget))
+                {
+                    f.albedoTexture = t;
+                    available |= WXL_GFX_NEED_ALBEDO;
+                }
+            }
             // With the world in a colour override nobody resolved yet the passes draw on it, whoever
             // owns it and whether or not one of ours asked: the back buffer holds no world yet, and
             // the resolve that follows would paint over anything drawn there.
@@ -418,6 +440,10 @@ namespace
             f.deltaTime     = g_deltaTime;
             f.view          = g_view;
 
+            // Compute first, in one submission after the world pass: every D3D9 pass below may read
+            // what it produced.
+            wxl::gfx::vulkan::RunComputeBlock(f);
+
             if (hdr) dev->SetRenderTarget(0, hdr);
             const bool timing = g_cfg.profile;
             if (timing) g_timer.Begin(dev);
@@ -430,6 +456,13 @@ namespace
                     p->ran = true;
                     // A pass without a slot still closes its span (-1), so its time is nobody's.
                     if (timing) g_timer.Mark(p->span);
+                    // Resolved: the passes after it draw on the finished image, not the HDR colour.
+                    if (hdr && f.colorResolved && *f.colorResolved)
+                    {
+                        dev->SetRenderTarget(0, backBuffer);
+                        f.target = backBuffer;
+                        hdr = nullptr;
+                    }
                 }
             }
             if (timing) g_timer.End();
@@ -450,7 +483,8 @@ namespace wxl::gfx::frame
     {
         g_cfg.supply = (ConfigBool("WXL_GFX_DEPTH",   true) ? WXL_GFX_NEED_DEPTH   : 0u)
                      | (ConfigBool("WXL_GFX_NORMALS", true) ? WXL_GFX_NEED_NORMALS : 0u)
-                     | (ConfigBool("WXL_GFX_HDR",     true) ? WXL_GFX_NEED_HDR     : 0u);
+                     | (ConfigBool("WXL_GFX_HDR",     true) ? WXL_GFX_NEED_HDR     : 0u)
+                     | (ConfigBool("WXL_GFX_ALBEDO",  true) ? WXL_GFX_NEED_ALBEDO  : 0u);
         g_cfg.profile = ConfigBool("WXL_GFX_PROFILE", true);
 
         QueryPerformanceFrequency(&g_qpcFrequency);
@@ -458,9 +492,10 @@ namespace wxl::gfx::frame
         if (g_qpcFrequency.QuadPart <= 0) g_qpcFrequency.QuadPart = 1;
 
         static Scheduler scheduler;
-        GFX_LOG_INFO("frame: depth %s, normals %s, hdr %s, profiling %s",
+        GFX_LOG_INFO("frame: depth %s, normals %s, albedo %s, hdr %s, profiling %s",
                      (g_cfg.supply & WXL_GFX_NEED_DEPTH)   ? "on" : "off",
                      (g_cfg.supply & WXL_GFX_NEED_NORMALS) ? "on" : "off",
+                     (g_cfg.supply & WXL_GFX_NEED_ALBEDO)  ? "on" : "off",
                      (g_cfg.supply & WXL_GFX_NEED_HDR)     ? "on" : "off",
                      g_cfg.profile ? "on" : "off");
     }
