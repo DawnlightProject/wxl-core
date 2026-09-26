@@ -52,7 +52,7 @@
 #define SH_ROW_SCREEN    13   // width, height, 1 / width, 1 / height
 #define SH_ROW_TRACE     14   // trace width, height; pixels per trace texel (1 or 2); 0
 #define SH_ROW_CONTACT   15   // sun length, lamp length, thickness, strength (0 off)
-#define SH_ROW_CONTACT2  16   // sun steps, lamp steps, body that shines (0 sun, 1 moon, -1 none), distance fade yards
+#define SH_ROW_CONTACT2  16   // most steps towards the sun, towards a lamp (one every 1.5 px up to these); body that shines (0 sun, 1 moon, -1 none), distance fade yards
 #define SH_ROW_CSLOTS    17   // the slots with a contact shadow (-1 none)
 #define SH_ROW_DEBUG     18   // view, slot, 0, 0
 #define SH_ROW_ATLASVIEW 19   // the atlas view: uv scale x, y; 0; 0

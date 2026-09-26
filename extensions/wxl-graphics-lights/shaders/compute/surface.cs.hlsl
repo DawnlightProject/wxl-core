@@ -135,8 +135,10 @@ void main(uint3 id : SV_DispatchThreadID)
     // Roughness from the material: terrain by its gloss mask, buildings, models; wet ground is glossier.
     float gloss = MaterialGloss(code);
     float rough = kind > 2.5 ? lerp(0.8, 0.35, gloss) : (kind > 1.5 ? 0.6 : 0.7);
-    float room = RoomAt(r);
-    float roomW = RoomWeight(room);
+    // The ground is never inside a room: terrain is not drawn indoors, and a group's box often reaches
+    // over the ground around its building.
+    RoomSet rs = RoomsAt(r, n, kind > 2.5);
+    float roomW = rs.indoor;
     float wet = shade.z * saturate(n.z * 2.0 - 1.0) * (1.0 - roomW);
     rough = saturate(lerp(rough, 0.2, wet) * shade2.y);
     albedo *= 1.0 - 0.3 * wet;
@@ -173,7 +175,7 @@ void main(uint3 id : SV_DispatchThreadID)
         if (E <= 0.0) continue;
         float footprint = pixelYards / max(dl, 0.05);
         float3 shape = LightShape(i, s, -l, footprint);
-        float gate = LightRoomGate(s, room, roomW);
+        float gate = LightRoomGate(s, rs);
         float vis = SlotVisibility(px, SlotOf(i));
         float thin = Isolated(LIGHTS_ISO_NO_FOG) ? 1.0 : exp(-shade.w * dl);
         float3 rgb = LightHot(s.intensity, dl, s.softRadius, s.hot) * (E * gate * vis * thin) * shape;
@@ -215,7 +217,7 @@ void main(uint3 id : SV_DispatchThreadID)
         else if (view == LIGHTS_VIEW_COOKIES) c = saturate(cookieSum);
         else if (view == LIGHTS_VIEW_ROOMS)
         {
-            float b = room;
+            float b = rs.main;
             c = b < -0.5 ? float3(0.05, 0.05, 0.05) : DecodeGamma(frac(float3(0.37, 0.61, 0.83) * (b + 1.0)) * (0.3 + 0.7 * roomW));
         }
         outLight[px] = float4(c, 1.0);

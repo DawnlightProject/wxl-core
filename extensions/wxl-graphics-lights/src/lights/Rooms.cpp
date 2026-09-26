@@ -280,15 +280,18 @@ namespace wxl::gfx::lights::rooms
         return -1;
     }
 
-    int RoomOf(const float r[3], float& lo, float& hi)
+    int RoomOf(const float r[3], float& lo, float& hi, float inset)
     {
+        // Inside a padded face by `inset` yards: |q| <= 1 - inset * |row| (each row's length is 1 / half size).
+        auto inside = [&](const float* row) {
+            const float q = r[0] * row[0] + r[1] * row[1] + r[2] * row[2] + row[3];
+            const float len = std::sqrt(row[0] * row[0] + row[1] * row[1] + row[2] * row[2]);
+            return std::fabs(q) <= 1.0f - inset * len;
+        };
         for (int b = 0; b < g_count; ++b)
         {
             if (g_weights[b] <= 0.0f) continue;
-            const float* x = g_rows[b * 3];
-            const float* y = g_rows[b * 3 + 1];
-            if (std::fabs(r[0] * x[0] + r[1] * x[1] + r[2] * x[2] + x[3]) > 1.0f) continue;
-            if (std::fabs(r[0] * y[0] + r[1] * y[1] + r[2] * y[2] + y[3]) > 1.0f) continue;
+            if (!inside(g_rows[b * 3]) || !inside(g_rows[b * 3 + 1])) continue;
             float a = 0.0f, c = 0.0f;
             if (!Height(b, r, a, c) || r[2] < a - kFloorSlack || r[2] > c + kFloorSlack) continue;
             lo = a;

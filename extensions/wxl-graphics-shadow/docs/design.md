@@ -212,17 +212,20 @@ Lamps outside the maps still have bodies cutting their beams, on surfaces and in
 ## 4. Contact shadows
 
 Contact shadows are screen-space and part of the mask pass:
-- **Sun and moon:** 10 fixed steps over 1.5 yd.
-- **Up to four slots** (the most important): 8 steps over up to 1 yd, never further than half the
-  distance to the light.
+- **Sun and moon:** a march over 1.5 yd, up to 32 samples.
+- **Up to four slots** (the most important): a march over up to 1 yd, never further than half the
+  distance to the light, up to 16 samples.
 
 They stay stable:
-- There is no jitter: the steps are fixed and quadratically spaced. Occlusion is a soft ramp on the
-  depth difference, so the steps never band.
+- There is no jitter. The samples are spaced evenly along the ray's image on screen, about one every
+  1.5 pixels (at least 4, at most the counts above), so a thin occluder (a leg, a post, a blade of
+  grass) is never stepped over by some receivers and hit by their neighbours. Fixed, quadratically
+  spaced steps did exactly that and drew combs of copies of the occluder behind it. Occlusion is a
+  soft ramp on the depth difference, so the samples never band.
 - **No self-intersection.** A sample is ignored when its depth lies on the receiver's own plane
   (from the G-buffer normal, or from depth where there is none), within a tolerance that grows with
   distance. That plane test, not a fixed thickness, is what removes stripes.
-- A sample only occludes within a thickness of 0.6 yd behind the depth buffer, and the result fades
+- A sample only occludes within a thickness of 0.35 yd behind the depth buffer, and the result fades
   out towards screen edges and in the distance.
 
 ## 5. Sun and moon
