@@ -134,6 +134,17 @@ namespace wxl::gfx::lights::families
         for (int k = 0; k < 3; ++k) rgb[k] += (l - rgb[k]) * s;
     }
 
+    void SoftCap(float rgb[3], float room)
+    {
+        if (room <= 0.0f) return;
+        const float e = std::max(std::max(rgb[0], rgb[1]), rgb[2]) - 1.0f;
+        if (e <= 0.0f) return;
+        // Luma is a weighted mean (its weights sum to 1), so moving every channel the same share of the
+        // way to white keeps a luminance of 1.
+        const float f = 1.0f / (1.0f + e / room);
+        for (int k = 0; k < 3; ++k) rgb[k] = 1.0f + (rgb[k] - 1.0f) * f;
+    }
+
     void TintOf(const float gamma[3], float rgb[3])
     {
         for (int k = 0; k < 3; ++k) rgb[k] = std::pow(std::max(gamma[k], 0.0f), 2.2f);

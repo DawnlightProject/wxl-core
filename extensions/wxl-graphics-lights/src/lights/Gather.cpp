@@ -26,6 +26,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <functional>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -38,10 +40,15 @@ namespace
     constexpr size_t   kCollectCap  = 4096;
     constexpr size_t   kModelCap    = 4096;
     constexpr float    kFadeSeconds = 1.0f;
-    constexpr float    kKeepBonus   = 1.25f;   // score factor of a light chosen last frame, against swaps at the 128th place
-    // About ten seconds: models the engine culled (behind the camera) keep their lights, so the set
-    // does not change as the camera turns.
-    constexpr uint32_t kStaleFrames = 600;
+    constexpr float    kKeepBonus   = 1.5f;    // score factor of a light chosen last frame, against swaps at the 128th place
+    constexpr double   kHoldSeconds = 2.0;     // a light once chosen stays chosen this long while it is found
+    // Models the engine culled (behind the camera, or just off screen) keep their lights this long,
+    // with their last values, so the set does not change as the camera turns. The engine stamps its
+    // lights in scene frames; StaleFrames turns the seconds into frames at the rate the scene runs.
+    constexpr double   kStaleSeconds = 10.0;
+    // The model table's lights stand on placed doodads that never move: however long ago the engine
+    // last animated one, its light is where it was, so their age is not asked at all.
+    constexpr uint32_t kAnyAge = 0xFFFFFFFFu;
 
     struct Tracked
     {
@@ -52,9 +59,46 @@ namespace
         float       score;
         float       weight;   // 0..1, eased towards 1 while chosen and 0 while not
         bool        chosen;
+        double      since;    // g_clock when it was last chosen after not being chosen
     };
 
     std::vector<Tracked> g_tracked;
+    double               g_clock = 0.0;   // seconds of gathers, for the hold
+
+    /// The scene frames of the last kStaleSeconds. A fixed count of frames would keep a culled lamp
+    /// 2.5 s at 240 frames a second and 20 s at 30. The scene's frame counter is sampled every quarter
+    /// second; the newest sample at least kStaleSeconds old gives the count, and until there is one, the
+    /// rate so far.
+    uint32_t StaleFrames()
+    {
+        struct Sample { double t; uint32_t frame; };
+        constexpr int kSamples = 64;   // 16 s at one a quarter second
+        static Sample samples[kSamples];
+        static int count = 0, head = 0;
+        LARGE_INTEGER counter{}, frequency{};
+        QueryPerformanceCounter(&counter);
+        QueryPerformanceFrequency(&frequency);
+        const double now = double(counter.QuadPart) / double(frequency.QuadPart);
+        const uint32_t frame = lt::SceneFrame();
+        const Sample* newest = count ? &samples[(head + kSamples - 1) % kSamples] : nullptr;
+        if (newest && frame < newest->frame) count = 0;   // a new world scene counts from its start
+        if (!count || now - newest->t >= 0.25)
+        {
+            samples[head] = Sample{ now, frame };
+            head = (head + 1) % kSamples;
+            count = std::min(count + 1, kSamples);
+        }
+        for (int i = 0; i < count; ++i)
+        {
+            const Sample& s = samples[(head + kSamples - 1 - i) % kSamples];
+            if (now - s.t >= kStaleSeconds) return frame - s.frame;
+        }
+        const Sample& oldest = samples[(head + kSamples - count) % kSamples];
+        const double span = now - oldest.t;
+        if (span < 0.5) return 600;   // no rate yet: ten seconds at 60 frames a second
+        return uint32_t(std::clamp(double(frame - oldest.frame) / span * kStaleSeconds, 60.0, 1e6));
+    }
+
     std::vector<const void*> g_attached;   // model instances riding another, sorted
 
     /// The file and rotation behind an engine light's owner (an M2 instance or a WMO placement).
@@ -108,6 +152,14 @@ namespace
         bool operator==(const Key& o) const { return owner == o.owner && index == o.index && kind == o.kind; }
     };
 
+    struct KeyHash
+    {
+        size_t operator()(const Key& k) const
+        {
+            return std::hash<const void*>()(k.owner) ^ (size_t(k.index) * 40503u + size_t(k.kind) * 0x9E3779B1u);
+        }
+    };
+
     Key KeyOf(const gl::Light& l) { return Key{ l.owner, l.index, l.kind }; }
 
     int Rank(gl::Kind k) { return k == gl::Kind::Table ? 0 : (k == gl::Kind::M2 ? 1 : 2); }
@@ -128,9 +180,13 @@ namespace
     }
 
     /// The winner takes the loser's reach and brightness where they are larger; its hue stays, and
-    /// its fog halo keeps its own reach.
+    /// its fog halo keeps its own reach. Whatever reach says, it keeps what the engine does with the
+    /// loser: the engine still lights with an M2 light a table light stands in for, and a MOLT light
+    /// stays baked into the interior's vertex colours.
     void Absorb(gl::Light& w, const gl::Light& l, bool reach)
     {
+        w.engineLit = uint8_t(w.engineLit | l.engineLit);
+        w.baked = uint8_t(w.baked | l.baked);
         if (!reach) return;
         if (w.haloRadius <= 0.0f && l.radius > w.radius)
         {
@@ -240,6 +296,10 @@ namespace
         o.intensity   = 1.0f;
         o.cosCone     = -2.0f;
         o.kind  = l.kind == lt::Kind::Wmo ? gl::Kind::Wmo : gl::Kind::M2;
+        // The engine lights the scene with its M2 lights itself; a MOLT light is baked into the
+        // building's interior vertex colours instead.
+        o.engineLit = o.kind == gl::Kind::M2 ? 1 : 0;
+        o.baked     = o.kind == gl::Kind::Wmo ? 1 : 0;
         // The engine's lights carry no family: a warm model light is taken for a fire, a warm WMO
         // light for a lantern.
         const bool warm = l.color[0] > 1.3f * l.color[2] && l.color[0] > 0.05f;
@@ -269,12 +329,13 @@ namespace wxl::gfx::lights
         size_t n = 0, wmo = 0, table = 0, carried = 0;
         if (options.engine && slots > 0)
         {
+            const uint32_t stale = StaleFrames();
             lt::Query q;
             for (int k = 0; k < 3; ++k) q.center[k] = eye[k];
             q.radius = options.radius;
             q.m2  = true;
             q.wmo = options.wmo;
-            q.maxStaleFrames = kStaleFrames;
+            q.maxStaleFrames = stale;
             const size_t matched = lt::Collect(q, engine, kCollectCap);
             const size_t e = std::min(matched, kCollectCap);
             static bool warned = false;
@@ -295,7 +356,7 @@ namespace wxl::gfx::lights
                 lt::ModelQuery mq;
                 for (int k = 0; k < 3; ++k) mq.center[k] = eye[k];
                 mq.radius = options.radius + 4.0f;
-                mq.maxStaleFrames = kStaleFrames;
+                mq.maxStaleFrames = stale;
                 mq.unlitOnly = false;
                 mq.includeAttached = true;
                 const size_t m = std::min(lt::CollectModels(mq, instances, kModelCap), kModelCap);
@@ -334,7 +395,7 @@ namespace wxl::gfx::lights
             }
             if (options.table)
             {
-                table = std::min(table::Collect(eye, options.radius, kStaleFrames, found + n, kCollectCap - n, nullptr),
+                table = std::min(table::Collect(eye, options.radius, kAnyAge, found + n, kCollectCap - n, nullptr),
                                  kCollectCap - n);
                 n += table;
             }
@@ -343,9 +404,15 @@ namespace wxl::gfx::lights
         const size_t gathered = n;
         if (options.merge) n = MergeFixtures(found, n, options.mergeReach);
 
-        // Score everything in range by brightness over distance, then mark the best as chosen; a light
-        // chosen last frame counts kKeepBonus times, so two near-equal lights do not swap every frame.
-        struct Pick { float score; size_t index; };
+        // Score everything in range by brightness over distance, then mark the best as chosen. A light
+        // chosen last frame counts kKeepBonus times, so two near-equal lights do not swap every frame,
+        // and one chosen less than kHoldSeconds ago stays chosen whatever outranks it.
+        g_clock += double(std::max(dt, 0.0f));
+        const size_t cap = size_t(std::max(slots, 0));
+        static std::unordered_map<Key, size_t, KeyHash> where;   // tracked light by identity; kept for its buckets
+        where.clear();
+        for (size_t t = 0; t < g_tracked.size(); ++t) where[Key{ g_tracked[t].owner, g_tracked[t].index, g_tracked[t].kind }] = t;
+        struct Pick { float score; size_t index; int tracked; bool incumbent, held; };
         static std::vector<Pick> picks;   // kept between frames for its capacity
         picks.clear();
         for (size_t i = 0; i < n; ++i)
@@ -354,28 +421,42 @@ namespace wxl::gfx::lights
             const float dx = l.position[0] - eye[0], dy = l.position[1] - eye[1], dz = l.position[2] - eye[2];
             const float luma = (l.color[0] * 0.299f + l.color[1] * 0.587f + l.color[2] * 0.114f) * l.intensity;
             float score = luma / (1.0f + (dx * dx + dy * dy + dz * dz) / (l.radius * l.radius));
-            if (n > size_t(std::max(slots, 0)) && std::any_of(g_tracked.begin(), g_tracked.end(), [&](const Tracked& t) {
-                    return t.chosen && t.owner == l.owner && t.index == l.index && t.kind == l.kind; }))
-                score *= kKeepBonus;
-            picks.push_back({ score, i });
+            const auto it = where.find(KeyOf(l));
+            const int tracked = it == where.end() ? -1 : int(it->second);
+            const bool incumbent = tracked >= 0 && g_tracked[size_t(tracked)].chosen;
+            if (incumbent && n > cap) score *= kKeepBonus;
+            const bool held = incumbent && g_clock - g_tracked[size_t(tracked)].since < kHoldSeconds;
+            picks.push_back({ score, i, tracked, incumbent, held });
         }
-        std::sort(picks.begin(), picks.end(), [](const Pick& a, const Pick& b) { return a.score > b.score; });
-        if (picks.size() > size_t(std::max(slots, 0))) picks.resize(size_t(std::max(slots, 0)));
+        std::sort(picks.begin(), picks.end(), [](const Pick& a, const Pick& b) {
+            if (a.held != b.held) return a.held;
+            return a.score > b.score;
+        });
+        if (picks.size() > cap) picks.resize(cap);
 
+        // The wanted lights already tracked (chosen, or fading out) are chosen; the rest fade out.
         for (Tracked& t : g_tracked) t.chosen = false;
         for (const Pick& p : picks)
         {
+            if (p.tracked < 0) continue;
+            Tracked& t = g_tracked[size_t(p.tracked)];
+            if (!p.incumbent) t.since = g_clock;   // chosen again while fading out: a new hold
+            t.light = found[p.index];
+            t.score = p.score;
+            t.chosen = true;
+        }
+        // A light fading out keeps its slot until its weight reaches 0, so it always finishes its fade
+        // on screen and, chosen again, comes back from the weight it shows. Newcomers take only the
+        // slots nothing holds: one that outranks a lamp waits for that lamp's fade.
+        size_t occupied = 0;
+        for (const Tracked& t : g_tracked)
+            if (t.chosen || t.weight > 0.0f) ++occupied;
+        for (const Pick& p : picks)
+        {
+            if (p.tracked >= 0 || occupied >= cap) continue;
             const Light& l = found[p.index];
-            auto it = std::find_if(g_tracked.begin(), g_tracked.end(), [&](const Tracked& t) {
-                return t.owner == l.owner && t.index == l.index && t.kind == l.kind;
-            });
-            if (it == g_tracked.end()) g_tracked.push_back({ l.owner, l.index, l.kind, l, p.score, 0.0f, true });
-            else
-            {
-                it->light  = l;
-                it->score  = p.score;
-                it->chosen = true;
-            }
+            g_tracked.push_back({ l.owner, l.index, l.kind, l, p.score, 0.0f, true, g_clock });
+            ++occupied;
         }
 
         const float step = dt / kFadeSeconds;
@@ -385,7 +466,8 @@ namespace wxl::gfx::lights
                                        [](const Tracked& t) { return !t.chosen && t.weight <= 0.0f; }),
                         g_tracked.end());
 
-        // Chosen lights first, then the ones still fading out, while slots remain.
+        // Chosen lights first, then the ones still fading out. All fit, unless the given lights took
+        // more slots this frame; then the faintest fading lights are the ones cut.
         std::sort(g_tracked.begin(), g_tracked.end(), [](const Tracked& a, const Tracked& b) {
             if (a.chosen != b.chosen) return a.chosen;
             return a.weight * a.score > b.weight * b.score;
@@ -445,6 +527,7 @@ namespace wxl::gfx::lights
         // A Kelvin family keeps its temperature for a warm colour; a cold or coloured one (magic
         // flames) keeps its own hue, as does a family with a tint of its own.
         const bool warm = fm::Warm(l.color);
+        const bool ownTint = f.tint[0] + f.tint[1] + f.tint[2] > 0.0f;
         if (f.kelvin > 0.0f && warm)
         {
             fm::Blackbody(f.kelvin, l.chroma);
@@ -453,15 +536,22 @@ namespace wxl::gfx::lights
         }
         else
         {
-            fm::TintOf(f.tint[0] + f.tint[1] + f.tint[2] > 0.0f ? f.tint : l.color, l.chroma);
+            fm::TintOf(ownTint ? f.tint : l.color, l.chroma);
             l.kelvin = 0.0f;
         }
-        // Engine lights carry their brightness in their colour; given ones in their intensity.
+        // A warm colour at luminance 1 runs its red far past 1 (2 at 2000 K even after the adaptation,
+        // 1.6 at 2700 K): on reddish ground the red channel alone meets the curve's shoulder and a pool
+        // reads red, not orange. Its strongest channel is eased back, luminance kept (1.44 at 2000 K by
+        // default). Magic colours keep their saturation.
+        if (warm && (l.kelvin > 0.0f || !ownTint)) fm::SoftCap(l.chroma, o.warmthCap);
+        // Engine lights carry their brightness in their colour; given ones in their intensity. An
+        // engine light's colour sets only a little of its strength, so a model light authored at 4 is
+        // not twice the family's lamp.
         float scale = 1.0f;
         if (l.kind == Kind::M2 || l.kind == Kind::Wmo)
         {
             const float luma = 0.299f * l.color[0] + 0.587f * l.color[1] + 0.114f * l.color[2];
-            scale = std::clamp(std::sqrt(std::max(luma, 1e-3f)), 0.5f, 2.0f);
+            scale = std::clamp(std::sqrt(std::max(luma, 1e-3f)), 0.75f, 1.33f);
         }
         else if (l.kind == Kind::Given)
         {
@@ -472,7 +562,13 @@ namespace wxl::gfx::lights
         l.power = f.intensity * scale;
         l.softRadius = std::max(f.softRadius, 0.02f);
         l.emissiveRadius = std::clamp(2.0f * f.softRadius, 0.05f, 0.4f);
-        if (l.carried) l.softRadius = std::max(l.softRadius, o.carriedCore);
+        if (l.carried)
+        {
+            l.softRadius = std::max(l.softRadius, o.carriedCore);
+            // A torch in a hand sits a few inches from the fingers: the glow of an engine fire's
+            // 0.4 yd head would light the hand itself.
+            l.emissiveRadius = std::min(l.emissiveRadius, 0.12f);
+        }
         const float lit = std::max(l.power * std::max(o.gain, 0.0f), 0.0f);
         l.reach = std::clamp(std::sqrt(lit / std::max(o.cutoff, 1e-4f)), 4.0f, std::max(o.maxRadius, 4.0f));
         // A given light never reaches past what it asked for.

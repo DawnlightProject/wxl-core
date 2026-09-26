@@ -120,21 +120,42 @@ Every light belongs to a family, which gives it:
 | streetlamp | 2500 | 10 | 0.06 | lantern | downlight |
 | walllight | 2600 | 4 | 0.05 | lantern | grille |
 | greenlamp | tint (0.45, 1, 0.72) | 6 | 0.04 | lantern | cage |
-| engine fire (a warm M2 light) | 2000 | from the engine | 0.25 | fire | flame |
-| engine lamp (a warm WMO light) | 2700 | from the engine | 0.10 | lantern | none |
+| engine fire (a warm M2 light) | 2000 | 5, from the engine | 0.25 | fire | flame |
+| engine lamp (a warm WMO light) | 2700 | 4, from the engine | 0.10 | lantern | none |
 | tint (any cold or coloured light) | its own hue | from its source | 0.10 | its source's | its source's |
+
+An engine light's `I` is its family's times the square root of its colour's luma, clamped to 0.75 to
+1.33: the engine's colours carry their intensity, but a model light authored at 4 is not a lamp twice
+as strong as its family.
 
 **Scene units.** A scene-referred linear value of 1 is the engine's white. `I` is the irradiance at
 1 yd on a surface facing the light. A surface of albedo `a` there reflects `a * I`, before the
-tonemap. At night the engine's own lighting sits around 0.02 to 0.08. A torch therefore gives about
-1.2 at 2 yd and fades into the night at about 10 yd.
+tonemap. At night the engine's own lighting sits around 0.02 to 0.08.
+
+**The lamp gain** `g` (default 0.35) multiplies every lamp. A torch then gives about 0.4 at 2 yd, well
+above the night's light and short of the engine's white, and fades into the night within about 10 yd.
+At 1 it reached the game's white at 2 yd, which lit every street like a stage.
+
+**Daylight.** The eye adapted to the sun sees a lamp outdoors far weaker than at night. A lamp's
+intensity is multiplied by `1 + (dayGain - 1) * day * (1 - gate)`: `day` is the sky's day factor
+(section 7, 0 while the sky is not known yet), `gate` the light's room gate (section 9), and `dayGain`
+0.35 by default. A lamp outside every room by full day keeps 35 % of its strength; one inside a room
+keeps all of it; one carried through a doorway eases between the two with its gate. The reach stays
+the night's.
 
 ### Colour
 
 - **Kelvin.** The colour is the Planckian locus at the family's temperature (the Kim et al. cubic
   fit of CIE 1931 xy), taken to linear sRGB and normalised to luminance 1.
-- **Chromatic adaptation.** "Warmth adaptation" (default 0.25) moves that colour towards the
+- **Chromatic adaptation.** "Warmth adaptation" (default 0.35) moves that colour towards the
   luminance-matched white, as the eye does under warm light.
+- **The warm colour cap.** At luminance 1 a warm colour's red runs far past 1: 2.1 to 1.6 from 1850 K
+  to 2700 K even after the adaptation. On reddish ground the red channel alone then meets the curve's
+  shoulder, and the pool reads red rather than orange. A soft cap eases the strongest channel back,
+  luminance kept: with `e = max(c) - 1 > 0`, every channel becomes `1 + (c - 1) / (1 + e / room)`,
+  `room` 0.8 by default ("Warm colour cap", 0 off). A torch's (1.99, 0.77, 0.36) becomes
+  (1.44, 0.90, 0.72). It applies to warm colours only (a Kelvin family, or a warm tint); magic colours
+  keep their saturation. The legacy texture takes the capped chroma too.
 - **Tints.** A table row or engine light whose colour is not warm (magic blue, fel green, arcane
   purple) keeps its own hue as a tint, decoded to linear and normalised to luminance 1.
 - **The legacy texture.** The fog's current light texture takes the same chroma at the luminance it
@@ -151,9 +172,9 @@ window(x) = saturate(1 - x^4)^2
   carried core (1 yd by default), so its carrier never flares.
 - **The window.** It stays near 1 until about 0.6 R and reaches 0 with a zero slope, so a pool has no
   edge.
-- **The reach.** `R = clamp(sqrt(I / cutoff), 4, maxRadius)`, with the cutoff default 0.01. It
-  follows the light's brightness, not an authored radius, so a weak light is never stretched and a
-  strong one is never cut early.
+- **The reach.** `R = clamp(sqrt(g I / cutoff), 4, maxRadius)`, with the lamp gain `g` and the cutoff
+  default 0.01 (a torch reaches about 13 yd). It follows the light's brightness, not an authored
+  radius, so a weak light is never stretched and a strong one is never cut early.
 - **No cap, no plateau.** Nothing clamps the light near its source. The tonemap's shoulder handles
   it.
 
@@ -178,8 +199,9 @@ window(x) = saturate(1 - x^4)^2
 A surface within twice the family's source radius of a source (at least 5 cm, at most 40 cm)
 receives an emissive term, whatever its normal, with a smooth radial falloff. Its luminance is
 `I / (4 r^2)` with `r` half that radius, at most 400. That is the glass or wick of the lamp itself; a
-carried light's wider soft core does not widen it, so the hand holding a torch does not glow. It is
-published per light as `emissive` so bloom can find it later.
+carried light's wider soft core does not widen it, and its glow reaches at most 12 cm (an engine
+fire's would reach 40), so the hand holding a torch does not glow. It is published per light as
+`emissive` so bloom can find it later.
 
 ## 4. Gather, identity, budget
 
@@ -190,10 +212,31 @@ The gather of the previous version is kept as proven:
 - `LightId` from the owner, the index and the kind;
 - the list sorted by id.
 
+**What the engine does with a light** is kept through a merge. `WXL_GFX_LIGHT_SOURCE_ENGINE` (source
+row 3.z, and the published sources' flags) means the engine itself already lights the scene with it:
+an M2 light, or a table light merged with one, since the engine goes on lighting with the M2 light the
+table light stands in for. `WXL_GFX_LIGHT_SOURCE_BAKED` means a MOLT light, or a light merged with one:
+the building's author baked it into the interior's vertex colours. The legacy texture's flag 1 follows
+the first.
+
+**Staleness.** The engine animates only the models it draws, and its lights carry the scene frame they
+were last evaluated in. An engine light is kept for 10 s after its model was last animated, with its
+last values, so a lamp that leaves the screen as the camera turns does not drop out and fade back in.
+The seconds are turned into scene frames from the scene's own frame counter, sampled every quarter
+second, so the hold is the same at 30 and at 240 frames a second. The model table's lamps stand on
+placed doodads that never move: their age is not asked at all, and they stay while their model is
+loaded.
+
 **The budget.** At most 128 lights, the capacity of the legacy textures. Lights are ranked by
-importance: brightness over distance, with a 25 % bonus for a light already chosen. A light that
-leaves the chosen set fades out over 1 s, and a newcomer fades in, so a light never pops. Cluster
-lists are complete: a light is never dropped from a pixel because another is brighter.
+importance: brightness over distance from the eye, with a 50 % bonus for a light already chosen, and a
+light chosen less than 2 s ago stays chosen whatever outranks it. A light that leaves the chosen set
+fades out over 1 s and keeps its slot until its fade has run: a newcomer takes only the slots no light
+holds, fading in once a place is free. A light never pops out, and one chosen again while fading comes
+back from the weight it shows. Cluster lists are complete: a light is never dropped from a pixel
+because another is brighter.
+
+**The shadow service** ranks the same lights by their steady intensity over distance: without the
+flicker, so a flame's breathing never swaps two lamps' shadow slots.
 
 **Clusters.** 16 x 9 x 16 over the camera frustum, exponential from 0.5 to 250 yd, one texel per
 cluster, variable-length lists in one pool, with no cap. The legacy layout is unchanged. A light is
@@ -205,7 +248,35 @@ Kept whole:
 - baked cube-map cookies under `Textures\Forever\Cookies`, manifest format 2, from `5.tools/forever-bake`;
 - tinted glass;
 - the streamed atlas with its mean and tint from the manifest;
-- a 0.5 s fade of the pattern over its mean.
+- a 0.5 s fade of the pattern over its mean, in and now out: a cell a lamp still shows is handed to
+  another cookie only once its pattern has faded out over its mean (the waiting cookie keeps its mean
+  meanwhile), so no lamp's pattern snaps.
+
+**Softened by the source.** The bake renders the lamp's own model from its light as seen from a point:
+the opaque cap, ring, frame and base come out black and six to twelve times too sharp. A flame of
+radius `r0` behind bars at distance `b` throws a penumbra about `2 r0 / b` radians wide (0.3 rad for a
+2 cm flame a tenth of a yard from its bars), and a wall beside a lantern printed the lantern's own
+silhouette, magnified and stair-stepped by the 64-texel faces. Each cookie is therefore blurred once, on
+the CPU, as it fills its atlas cell (`src/lights/CookieBlur.cpp`):
+- `theta = softness * 2 r0 / b`, at least one texel of the face, at most 0.6 rad (softness 1 by
+  default, "Cookie softness");
+- `r0` from the model table's row (the family's source size, before the instance's scale, like the
+  cookie's own frame), or the family's soft core for an engine light;
+- `b` per family until the bake records it (a manifest column `cage_distance` wins): lantern and green
+  lamp 0.10, wall light 0.12, candle 0.05, brazier, campfire and hearth 0.3, the rest 0.1;
+- every texel becomes the mean of 8 to 32 taps over the disc of diameter `theta` around its direction (a
+  Vogel spiral, the same for every texel, so the result is a smooth convolution and never noise), read
+  bilinearly from a box pyramid of the six faces at the level the taps' spacing asks for;
+- the fetches cross the cube's faces (each face padded with its neighbours' texels, found through a
+  CPU twin of the shaders' `CookieUv`), so the seams stay continuous; a wide blur is worked at a smaller
+  face and brought up the same way;
+- one cell is filled a frame, on the render thread: at 64 texels a face about 1.5 ms for the widest
+  blur and 5 for a candle's (a desktop CPU; a narrow blur from a low softness costs up to 20). The
+  file's measured mean is the unsoftened one, which the blur keeps.
+
+The lantern's source radius in the model table is 0.04 yd (it was 0.02, chosen to keep cage shadows
+crisp: it made them hard silhouettes), and the cookie floor is 0.2 (it was 0.1): no direction of a lamp
+goes darker than a fifth of its light, for the light that leaks and bounces inside a fixture.
 
 Pushed further:
 - **Footprint prefiltering.** The atlas has no mips. Where a pixel (or a froxel) covers more of the
@@ -358,7 +429,9 @@ luminance.
 ### 8.2 `wxl.graphics-lights.sources` v1 (new)
 
 `GraphicsLightsSourcesApi.h`:
-- `Sources(count, frame)`: the HDR light list, index for index the same as `Current`;
+- `Sources(count, frame)`: the HDR light list, index for index the same as `Current`, each with its
+  `WXL_GFX_LIGHT_SOURCE_*` flags: carried, tube, cookie, room, engine (the engine lights the scene with
+  it already) and baked (in an interior's vertex colours), section 4;
 - `SourceTexture()`: the same list as `WXL_GFX_LIGHTS_MAX x WXL_GFX_LIGHT_SOURCE_ROWS` RGBA32F
   texels, D3D9 DEFAULT pool, importable into Vulkan, with the layout of
   `shaders/wxl/lights/sources.hlsli`;
@@ -451,8 +524,16 @@ Kept from the previous version:
 
 Added: a light's gate changes smoothly.
 - Each light remembers its room by identity, not by index.
-- When its room changes (a carried torch through a doorway), its gate eases to open over 0.15 s,
-  the room switches, and the gate eases back over 0.15 s.
+- Of the rooms holding it, a light takes a settled one: the smallest fully faded in, else the one
+  furthest faded in. A group only joining the working set never takes a lamp over while its weight is
+  low; one leaving hands the lamp to another group holding it.
+- Between two rooms that share its light, the room switches at once, with no dip: the new room is in
+  the old one's mask, or both hold the light. Its pixels are lit the same either way. Overlapping groups
+  joining and leaving the 12-room working set as the camera orbits used to dip the gate and drop the
+  lamp to the outdoor model for a moment (0.12 inside a room): indoor lamps blinked.
+- When its room changes otherwise (indoors to outdoors, outdoors to indoors, or into a room the old one
+  does not reach, such as a carried torch up a stair), its gate eases to open over 0.15 s, the room
+  switches, and the gate eases back over 0.15 s.
 - The published gate weight also carries the fade of the light's own room, so a room joining or
   leaving the working set eases the gate too.
 - A pixel blends two models by that weight: an outdoor light (full outdoors, the outdoor-indoors leak
@@ -481,12 +562,13 @@ wall is an outdoor light, not a light of the room behind the wall.
 ## 10. UI and settings
 
 The panel "Graphics Lights" has these tabs:
-- **Light:** HDR, exposure, knee, lamp gain, warmth adaptation, cutoff, flicker, per-family intensity;
+- **Light:** HDR, exposure, knee, lamp gain, lamps by day, warmth adaptation, warm colour cap, cutoff,
+  flicker, per-family intensity;
 - **Surfaces:** diffuse model, specular, roughness, wetness, lamp heads, sun shadow deepening, fog
   dimming, room leaks, cookie prefilter;
 - **Air:** the field, its shadows and thinning, the phase, the halo without fog;
 - **Gather:** sources, radius, merge, room leak;
-- **Cookies;**
+- **Cookies:** strength, floor, softness, flames, glass tint, budget, debug views;
 - **Shadow maps:** the legacy omni table;
 - **Debug:** GPU timers per span, views, isolates, markers, self-check.
 

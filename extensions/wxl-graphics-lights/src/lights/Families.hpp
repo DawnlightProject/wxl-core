@@ -56,6 +56,15 @@ namespace wxl::gfx::lights::families
     /// A linear colour moved towards white of the same luminance by share (chromatic adaptation).
     void Adapt(float rgb[3], float share);
 
+    /**
+     * @brief Eases a colour's strongest channel back towards 1, softly, its luminance kept.
+     *
+     * For a colour of luminance 1 whose strongest channel is 1 + e, every channel moves to
+     * 1 + (c - 1) / (1 + e / room): the excess over 1 never passes room, and a colour already within 1
+     * is left as it is. room <= 0 leaves every colour.
+     */
+    void SoftCap(float rgb[3], float room);
+
     /// A gamma working colour to linear, normalised to luminance 1; white when black.
     void TintOf(const float gamma[3], float rgb[3]);
 

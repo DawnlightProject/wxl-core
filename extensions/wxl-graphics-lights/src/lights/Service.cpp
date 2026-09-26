@@ -174,8 +174,11 @@ namespace
 
     // --- room gates that change smoothly -------------------------------------------------------------
 
-    /// A light's room by identity, and how much its gate applies. Changing room, the gate opens (eases
-    /// to 0) over half the time, the room switches, and it closes (eases to 1) over the other half.
+    /// A light's room by identity, and how much its gate applies. Between two rooms that share its
+    /// light (the new one in the old one's mask, or both holding it) the room switches at once: its
+    /// pixels are lit the same either way. Otherwise (indoors to outdoors, or into a room the old one
+    /// does not reach) the gate opens (eases to 0) over half the time, the room switches, and it closes
+    /// (eases to 1) over the other half.
     struct Gate
     {
         const void* owner = nullptr;   // the room's placement; null outside every room
@@ -187,14 +190,29 @@ namespace
     constexpr float    kGateHalf = 0.15f;    // seconds, each half of a change
     constexpr uint32_t kGateKeep = 300;      // frames a light's gate is kept once gone
 
+    /// Whether a light may move from its gate's room to room `now` at once, without the gate's dip:
+    /// both are rooms, the old one is still published, and the new one is in the old one's mask or
+    /// holds the light too. Overlapping groups joining and leaving the working set as the camera
+    /// orbits then never blink a lamp through the outdoor model. r is the light camera-relative.
+    bool Seamless(const Gate& g, int now, const float r[3])
+    {
+        namespace rooms = gl::rooms;
+        if (!g.owner || now < 0) return false;
+        const int old = rooms::IndexOf(g.owner, g.group);
+        if (old < 0) return false;
+        return (rooms::Mask(old, r) >> now & 1u) != 0 || rooms::Contains(old, r, rooms::kPad);
+    }
+
     void UpdateGate(gl::Light& l, const float eye[3], float dt, uint32_t frame)
     {
         namespace rooms = gl::rooms;
         const float r[3] = { l.rest[0] - eye[0], l.rest[1] - eye[1], l.rest[2] - eye[2] };
         float lo = 0.0f, hi = 0.0f;
         // Within the group's own bounds, not its padding: a lantern standing just outside a wall
-        // is an outdoor light, not a light of the room behind the wall.
-        const int now = rooms::RoomOf(r, lo, hi, rooms::kPad);
+        // is an outdoor light, not a light of the room behind the wall. Of the rooms holding it, a
+        // settled one: a group still fading in never takes a lamp over, so the switch below never
+        // lands the gate on a room weight near 0.
+        const int now = rooms::SettledRoomOf(r, lo, hi, rooms::kPad);
         const void* owner = nullptr;
         uint32_t group = 0;
         if (now >= 0) rooms::Identity(now, owner, group);
@@ -209,6 +227,12 @@ namespace
             g.seen = frame;
             const float step = dt / kGateHalf;
             if (g.owner == owner && g.group == group) g.weight = std::min(g.weight + step, 1.0f);
+            else if (Seamless(g, now, r))
+            {
+                g.owner = owner;
+                g.group = group;
+                g.weight = std::min(g.weight + step, 1.0f);
+            }
             else
             {
                 g.weight -= step;
@@ -244,7 +268,7 @@ namespace
     // --- the shadow service ---------------------------------------------------------------------------
 
     /// Hands this frame's lights to wxl-graphics-shadow (it keys its slots on their ids), ranked by
-    /// brightness over distance. Lights without an id (given ones) cast nothing.
+    /// steady brightness over distance. Lights without an id (given ones) cast nothing.
     void GiveShadowLights(const float eye[3])
     {
         const WXL_GraphicsShadowApi* shadow = gl::Shadow();
@@ -267,8 +291,9 @@ namespace
             s.radius = std::max(l.reach, l.radius);
             s.cosCone = tube ? -2.0f : l.cosCone;
             s.sourceSize = std::max(l.size, 0.01f);
+            // Without the flicker: a flame's breathing must not swap the shadow slots of two lamps.
             float rgb[3];
-            gl::SourceIntensity(l, rgb);
+            gl::SteadyIntensity(l, rgb);
             const float dx = l.rest[0] - eye[0], dy = l.rest[1] - eye[1], dz = l.rest[2] - eye[2];
             s.importance = fm::Luma(rgb) / (1.0f + (dx * dx + dy * dy + dz * dz) / std::max(s.radius * s.radius, 1.0f));
             s.flags = (l.carried ? WXL_GFX_SHADOW_LIGHT_CARRIED : 0u) | (tube ? WXL_GFX_SHADOW_LIGHT_NO_MAP : 0u);
@@ -292,6 +317,18 @@ namespace
     }
 
     template <class T> uint8_t Byte(T v) { return uint8_t(v); }
+
+    /// How much of its strength daylight leaves a lamp: dayGain by full day, all of it by night and
+    /// inside a room. The eye adapted to the sun sees a lamp outdoors far weaker than at night, while a
+    /// room keeps its own dim light. Eased by the light's room gate, so a lamp carried through a doorway
+    /// never jumps.
+    float Daylight(const gl::Light& l)
+    {
+        const WXL_GfxSkyLight& sky = gl::sky::Current();
+        if (!sky.valid) return 1.0f;
+        const float day = std::clamp(sky.dayFactor, 0.0f, 1.0f) * (1.0f - std::clamp(l.roomGate, 0.0f, 1.0f));
+        return 1.0f + (std::clamp(g_options.dayGain, 0.0f, 1.0f) - 1.0f) * day;
+    }
 
     /// WXL_GFX_LIGHTS_INTENSITY_<FAMILY> scales one family (spaces in its name become underscores).
     void ReadFamilyScales()
@@ -330,13 +367,16 @@ namespace wxl::gfx::lights
         o.merge = ConfigBool("WXL_GFX_LIGHTS_MERGE", true);
         o.mergeReach = ConfigBool("WXL_GFX_LIGHTS_MERGE_REACH", true);
         o.gain = ConfigFloat("WXL_GFX_LIGHTS_GAIN", o.gain, 0.0f, 10.0f);
+        o.dayGain = ConfigFloat("WXL_GFX_LIGHTS_DAY_GAIN", o.dayGain, 0.0f, 1.0f);
         o.adaptation = ConfigFloat("WXL_GFX_LIGHTS_ADAPTATION", o.adaptation, 0.0f, 1.0f);
+        o.warmthCap = ConfigFloat("WXL_GFX_LIGHTS_WARMTH_CAP", o.warmthCap, 0.0f, 4.0f);
         o.cutoff = ConfigFloat("WXL_GFX_LIGHTS_CUTOFF", o.cutoff, 0.001f, 0.1f);
         o.legacyChroma = ConfigBool("WXL_GFX_LIGHTS_LEGACY_CHROMA", true);
         ReadFamilyScales();
         LIGHTS_LOG_INFO("lights: service installed (engine %d, wmo %d, table %d, radius %.0f, flicker %.2f, merge %d, "
-                        "gain %.2f, adaptation %.2f, cutoff %.3f)",
-                        o.engine, o.wmo, o.table, o.radius, o.flicker, o.merge, o.gain, o.adaptation, o.cutoff);
+                        "gain %.2f, day gain %.2f, adaptation %.2f, warmth cap %.2f, cutoff %.3f)",
+                        o.engine, o.wmo, o.table, o.radius, o.flicker, o.merge, o.gain, o.dayGain, o.adaptation,
+                        o.warmthCap, o.cutoff);
     }
 
     void SetGiven(const void* key, const WXL_GfxLight* lights, int count)
@@ -518,11 +558,25 @@ namespace wxl::gfx::lights
         clusterD[3] = 1.0f / std::log(kClusterFar / kClusterNear);
     }
 
+    void SteadyIntensity(const Light& l, float rgb[3])
+    {
+        const float s = std::max(l.power, 0.0f) * std::max(g_options.gain, 0.0f) * Daylight(l) * std::clamp(l.fade, 0.0f, 1.0f);
+        for (int k = 0; k < 3; ++k) rgb[k] = l.chroma[k] * s;
+    }
+
     void SourceIntensity(const Light& l, float rgb[3])
     {
-        const float s = std::max(l.power, 0.0f) * std::max(g_options.gain, 0.0f) * std::clamp(l.fade, 0.0f, 1.0f)
-                      * std::max(l.flickerGain, 0.0f);
-        for (int k = 0; k < 3; ++k) rgb[k] = l.chroma[k] * s;
+        SteadyIntensity(l, rgb);
+        const float flicker = std::max(l.flickerGain, 0.0f);
+        for (int k = 0; k < 3; ++k) rgb[k] *= flicker;
+    }
+
+    uint32_t SourceFlags(const Light& l)
+    {
+        const bool tube = l.extent[0] != 0.0f || l.extent[1] != 0.0f || l.extent[2] != 0.0f;
+        return (l.carried ? WXL_GFX_LIGHT_SOURCE_CARRIED : 0u) | (tube ? WXL_GFX_LIGHT_SOURCE_TUBE : 0u)
+             | (l.cookieOpen >= 0.0f ? WXL_GFX_LIGHT_SOURCE_COOKIE : 0u) | (l.room >= 0 ? WXL_GFX_LIGHT_SOURCE_ROOM : 0u)
+             | (l.engineLit ? WXL_GFX_LIGHT_SOURCE_ENGINE : 0u) | (l.baked ? WXL_GFX_LIGHT_SOURCE_BAKED : 0u);
     }
 
     float SourceEmissive(const Light& l)
@@ -575,9 +629,7 @@ namespace wxl::gfx::lights
         o.flicker = Byte(l.flicker);
         o.profile = Byte(l.profile);
         const bool tube = l.extent[0] != 0.0f || l.extent[1] != 0.0f || l.extent[2] != 0.0f;
-        o.flags = uint8_t((l.carried ? WXL_GFX_LIGHT_SOURCE_CARRIED : 0u) | (tube ? WXL_GFX_LIGHT_SOURCE_TUBE : 0u)
-                          | (l.cookieOpen >= 0.0f ? WXL_GFX_LIGHT_SOURCE_COOKIE : 0u) | (l.room >= 0 ? WXL_GFX_LIGHT_SOURCE_ROOM : 0u)
-                          | (l.kind == Kind::M2 ? WXL_GFX_LIGHT_SOURCE_ENGINE : 0u));
+        o.flags = uint8_t(SourceFlags(l));
         SourceIntensity(l, o.intensity);
         const bool spot = !tube && l.cosCone > -1.0f;
         for (int k = 0; k < 3; ++k)

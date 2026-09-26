@@ -16,6 +16,8 @@
 
 #include "../core/Extension.hpp"
 #include "Cookies.hpp"
+#include "CookieBlur.hpp"
+#include "Families.hpp"
 #include "ModelTable.hpp"
 #include "Textures.hpp"
 
@@ -45,7 +47,9 @@ namespace
     constexpr uint32_t kKeepFrames  = 120;  // a cell stays this long after its cookie was last wanted
     constexpr float    kPinYards    = 30.0f; // lamps this near keep their cookie resident first
     constexpr int      kMeasuring   = 4;    // cookie reads in flight only to learn their mean
-    constexpr float    kEaseSeconds = 0.5f; // a cookie's pattern fades in, and its mean moves, over this
+    constexpr float    kEaseSeconds = 0.5f; // a cookie's pattern fades in and out, and its mean moves, over this
+    constexpr int      kFillsPerFrame = 1;  // cells filled (decoded, softened, copied up) in one frame
+    constexpr DWORD    kSoftnessRest = 500; // ms the softness must rest before every cookie is read again
     constexpr const char* kFolder   = "Textures\\Forever\\Cookies";
 
     ck::Settings g_cfg;
@@ -68,8 +72,13 @@ namespace
         float       target = -1.0f;                 // the file's measured mean, once read
         float       targetTint[3] = { 1.0f, 1.0f, 1.0f };
         float       resident = 0.0f;                // 0..1: how far its pattern has faded in over its mean
+        bool        releasing = false;              // its pattern fades out: its cell goes to another cookie after
         uint32_t    eased = 0;                      // the frame the above last moved
         uint32_t    measure = 0;                    // a read for its mean alone, without a cell (asset id)
+        // What it is softened by: the glowing source's radius and how far the cage stands from it, in
+        // the model's own units (-1 until a light using it or the manifest says).
+        float       sourceRadius = -1.0f;
+        float       cageDistance = -1.0f;
     };
     std::vector<Record>                  g_records;
     std::unordered_map<uint64_t, int>    g_recordOfLight;  // LightKey -> record
@@ -108,9 +117,43 @@ namespace
     std::vector<int>   g_measuring;         // records with a mean read in flight
     std::vector<int>   g_touched, g_beyond; // this frame's wanted records, kept for their capacity
     std::vector<uint8_t> g_texels, g_lum, g_bgra;   // decode scratch, kept for its capacity
+    std::vector<uint8_t> g_faces, g_soft;           // a cookie's six faces as read, and softened
+    ck::BlurScratch    g_blur;
+    float              g_softness = 1.0f;          // the softness the cells were filled with
+    float              g_softnessWanted = 1.0f;    // the settings' value while it rests
+    DWORD              g_softnessAt = 0;
     char               g_status[200] = "cookies: not loaded";
     IDirect3DPixelShader9* g_debugPs = nullptr;   // the atlas view; shaders survive a device reset
     bool               g_debugPsFailed = false;
+
+    /// How far a family's cage, frame or bowl stands from its flame, in the model's units, until the
+    /// bake records it (a manifest column cage_distance wins): what the source's size is seen against.
+    float CageDistance(uint32_t family)
+    {
+        switch (family)
+        {
+        case WXL_GFX_LIGHT_FAMILY_LANTERN:
+        case WXL_GFX_LIGHT_FAMILY_GREENLAMP: return 0.10f;
+        case WXL_GFX_LIGHT_FAMILY_WALLLIGHT: return 0.12f;
+        case WXL_GFX_LIGHT_FAMILY_CANDLE:    return 0.05f;
+        case WXL_GFX_LIGHT_FAMILY_BRAZIER:
+        case WXL_GFX_LIGHT_FAMILY_CAMPFIRE:
+        case WXL_GFX_LIGHT_FAMILY_HEARTH:    return 0.3f;
+        default:                             return 0.1f;
+        }
+    }
+
+    /// A record's softening, from the first light found using it: a table light's row gives its
+    /// source (unscaled, like the cookie's own frame), any other its family's soft core.
+    void LearnShape(Record& r, const gl::Light& l)
+    {
+        float size = -1.0f;
+        uint32_t family = l.family;
+        if (l.kind == gl::Kind::Table) gl::table::SourceShape(l.cookieSource, l.index, size, family);
+        if (!(size > 0.0f)) size = gl::families::Get(family).softRadius;
+        r.sourceRadius = size;
+        if (r.cageDistance <= 0.0f) r.cageDistance = CageDistance(family);
+    }
 
     unsigned CellsDown() { return unsigned((std::max(g_cfg.budget, 1) + kCellsAcross - 1) / kCellsAcross); }
     unsigned AtlasW() { return kCellsAcross * 4 * g_face; }
@@ -134,6 +177,7 @@ namespace
         const int cSize = gfx->ManifestColumn(g_manifest, "size"), cKind = gfx->ManifestColumn(g_manifest, "kind");
         const int cFormat = gfx->ManifestColumn(g_manifest, "format");
         const int cBlocked = gfx->ManifestColumn(g_manifest, "blocked");
+        const int cCage = gfx->ManifestColumn(g_manifest, "cage_distance");   // none yet: the families' defaults
         const int cTint[3] = { gfx->ManifestColumn(g_manifest, "tint_r"), gfx->ManifestColumn(g_manifest, "tint_g"),
                                gfx->ManifestColumn(g_manifest, "tint_b") };
         if (cModel < 0 || cLight < 0 || cFile < 0 || cStatus < 0)
@@ -179,6 +223,7 @@ namespace
                     const float luma = 0.299f * t[0] + 0.587f * t[1] + 0.114f * t[2];
                     for (int k = 0; k < 3; ++k) r.tint[k] = luma > 1e-4f ? t[k] / luma : 1.0f;
                 }
+                if (cCage >= 0) r.cageDistance = gfx->ManifestNumber(g_manifest, i, cCage, -1.0f);
                 g_records.push_back(r);
             }
             g_recordOfLight[LightKey(kind, source, index)] = it->second;
@@ -204,7 +249,11 @@ namespace
             for (Cell& c : g_cells)
                 if (c.asset) gfx->AssetRelease(c.asset);
         g_cells.assign(size_t(std::max(g_cfg.budget, 1)), Cell{});
-        for (Record& r : g_records) r.cell = -1;
+        for (Record& r : g_records)
+        {
+            r.cell = -1;
+            r.releasing = false;
+        }
     }
 
     /// The 1 x 1 white stand-in, DEFAULT pool like the atlas, so a consumer imports either the same way.
@@ -227,6 +276,7 @@ namespace
         tex::Release(g_atlas);
         ResetCells();
         g_atlasBudget = g_cfg.budget;
+        g_softness = g_softnessWanted = g_cfg.softness;
         const D3DFORMAT format = g_tinted ? D3DFMT_X8R8G8B8 : D3DFMT_L8;
         if (!tex::Create(dev, AtlasW(), AtlasH(), format, g_atlas, "cookie atlas"))
         {
@@ -366,17 +416,39 @@ namespace
         return true;
     }
 
-    /// Copies the six faces of a cookie file into a cell of the twin, copies the cell up and measures
-    /// what it averages to; false when the file is not a usable cube.
+    /// Reads the six faces of a cookie file, softens them by the record's source (CookieBlur.hpp) at
+    /// the cell's size, copies them into a cell of the twin, copies the cell up and measures what the
+    /// file averages to; false when the file is not a usable cube.
     bool FillCell(IDirect3DDevice9* dev, int cell, const void* bytes, size_t size, const char* name, Record& record)
     {
         WXL_GfxDdsInfo info;
         if (!ParseCube(bytes, size, name, info)) return false;
-        // The mip whose size is the cell's face, or the nearest smaller one, resampled if needed.
+        // The mip whose size is the cell's face, or the nearest smaller one; the blur brings it to the cell.
         unsigned level = 0;
         while (level + 1 < info.mips && (info.width >> level) > g_face) ++level;
-        const unsigned cx = unsigned(cell % kCellsAcross), cy = unsigned(cell / kCellsAcross);
         const unsigned bpp = TexelBytes();
+        // All six faces first: the blur reads across their seams.
+        Mean mean;
+        unsigned side = 0;
+        for (unsigned f = 0; f < 6; ++f)
+        {
+            unsigned w = 0, h = 0;
+            if (!DecodeFace(bytes, size, info, f, level, g_texels, w, h)) return false;
+            if (!w || w != h || (f && w != side))
+            {
+                LIGHTS_LOG_WARN("cookies: %s has cube faces that are not square or not alike", name);
+                return false;
+            }
+            side = w;
+            mean.Add(g_texels, w, h, bpp);
+            g_faces.resize(size_t(6) * side * side * bpp);
+            std::memcpy(g_faces.data() + size_t(f) * side * side * bpp, g_texels.data(), size_t(side) * side * bpp);
+        }
+        g_soft.resize(size_t(6) * g_face * g_face * bpp);
+        const float theta = ck::SoftAngle(record.sourceRadius, record.cageDistance, g_softness, g_face);
+        ck::BlurCube(g_faces.data(), side, bpp, theta, g_soft.data(), g_face, g_blur);
+
+        const unsigned cx = unsigned(cell % kCellsAcross), cy = unsigned(cell / kCellsAcross);
         RECT cellRect{};
         cellRect.left = LONG(cx * 4 * g_face);
         cellRect.top = LONG(cy * 2 * g_face);
@@ -385,27 +457,13 @@ namespace
         int pitch = 0;
         uint8_t* base = tex::Lock(g_atlas, &cellRect, pitch);
         if (!base) return false;
-        Mean mean;
-        bool ok = true;
-        for (unsigned f = 0; f < 6 && ok; ++f)
+        for (unsigned f = 0; f < 6; ++f)
         {
-            unsigned w = 0, h = 0;
-            ok = DecodeFace(bytes, size, info, f, level, g_texels, w, h);
-            if (!ok) break;
-            mean.Add(g_texels, w, h, bpp);
             uint8_t* face = base + size_t(f / 4) * g_face * size_t(pitch) + size_t(f % 4) * g_face * bpp;
             for (unsigned y = 0; y < g_face; ++y)
-            {
-                uint8_t* dst = face + size_t(y) * size_t(pitch);
-                const unsigned sy = std::min(y * h / g_face, h - 1);
-                if (w == g_face) std::memcpy(dst, g_texels.data() + size_t(sy) * w * bpp, size_t(w) * bpp);
-                else
-                    for (unsigned x = 0; x < g_face; ++x)
-                        std::memcpy(dst + size_t(x) * bpp, g_texels.data() + (size_t(sy) * w + std::min(x * w / g_face, w - 1)) * bpp, bpp);
-            }
+                std::memcpy(face + size_t(y) * size_t(pitch), g_soft.data() + (size_t(f) * g_face + y) * g_face * bpp, size_t(g_face) * bpp);
         }
         tex::Unlock(g_atlas);
-        if (!ok) return false;
         // Only this cell reaches the GPU: the rest of the atlas is as it was.
         tex::UploadRect(dev, g_atlas, cellRect);
         mean.Store(record);
@@ -500,10 +558,13 @@ namespace wxl::gfx::lights::cookies
         g_cfg.floor    = ConfigFloat("WXL_GFX_LIGHTS_COOKIES_FLOOR", g_cfg.floor, 0.0f, 0.5f);
         g_cfg.flame    = ConfigFloat("WXL_GFX_LIGHTS_COOKIES_FLAME", g_cfg.flame, 0.0f, 1.0f);
         g_cfg.tint     = ConfigFloat("WXL_GFX_LIGHTS_COOKIES_TINT", g_cfg.tint, 0.0f, 1.0f);
+        g_cfg.softness = ConfigFloat("WXL_GFX_LIGHTS_COOKIES_SOFTNESS", g_cfg.softness, 0.0f, 2.0f);
+        g_softness = g_softnessWanted = g_cfg.softness;
         g_cfg.budget   = ConfigInt("WXL_GFX_LIGHTS_COOKIES_BUDGET", g_cfg.budget, 4, kMaxBudget);
         g_cfg.debug    = ConfigInt("WXL_GFX_LIGHTS_COOKIES_DEBUG", 0, 0, 2);
-        LIGHTS_LOG_INFO("cookies: %s, strength %.2f, floor %.2f, flame %.2f, tint %.2f, budget %d", g_cfg.enabled ? "on" : "off",
-                        g_cfg.strength, g_cfg.floor, g_cfg.flame, g_cfg.tint, g_cfg.budget);
+        LIGHTS_LOG_INFO("cookies: %s, strength %.2f, floor %.2f, flame %.2f, tint %.2f, softness %.2f, budget %d",
+                        g_cfg.enabled ? "on" : "off", g_cfg.strength, g_cfg.floor, g_cfg.flame, g_cfg.tint, g_cfg.softness,
+                        g_cfg.budget);
     }
 
     void Frame(IDirect3DDevice9* dev, Light* lights, int count, const float eye[3], uint32_t frame)
@@ -515,6 +576,21 @@ namespace wxl::gfx::lights::cookies
         if (!g_cfg.enabled || !dev || !lights || !gfx) { UpdateStatus(); return; }
         if (!g_loaded) Load(gfx);
         if (g_records.empty() || !EnsureAtlas(dev)) { UpdateStatus(); return; }
+        // A new softness reads every cookie again, once the slider has rested: the blur is baked into
+        // the cells.
+        if (g_cfg.softness != g_softness)
+        {
+            if (g_cfg.softness != g_softnessWanted)
+            {
+                g_softnessWanted = g_cfg.softness;
+                g_softnessAt = GetTickCount();
+            }
+            else if (GetTickCount() - g_softnessAt > kSoftnessRest)
+            {
+                g_softness = g_cfg.softness;
+                ResetCells();
+            }
+        }
 
         // Which cookies the frame wants, by the importance of the brightest light using each.
         std::vector<int>& touched = g_touched;
@@ -536,6 +612,7 @@ namespace wxl::gfx::lights::cookies
             const float score = luma / (1.0f + d2 / std::max(l.radius * l.radius, 1.0f)) + (d2 < kPinYards * kPinYards ? 1000.0f : 0.0f);
             if (r.score <= 0.0f) touched.push_back(it->second);
             r.score = std::max(r.score, score + 1e-6f);
+            if (r.sourceRadius < 0.0f) LearnShape(r, l);
         }
         std::sort(touched.begin(), touched.end(), [](int a, int b) { return g_records[size_t(a)].score > g_records[size_t(b)].score; });
         // Past the budget a cookie gets no cell, only its mean (RequestMeans, below).
@@ -548,23 +625,47 @@ namespace wxl::gfx::lights::cookies
         }
         for (int rec : touched) g_records[size_t(rec)].wanted = frame;
 
-        // Give every wanted cookie a cell: an empty one, else the one least recently wanted.
+        // Give every wanted cookie a cell: an empty one, else the one least recently wanted. A pattern
+        // some lamp still shows fades out over its mean first (releasing), and its cell changes hands
+        // once it is gone, so no lamp's pattern snaps to its mean. A wanted cookie keeps its cell.
+        int releasing = 0;
+        for (int rec : touched) g_records[size_t(rec)].releasing = false;
+        for (const Cell& cell : g_cells)
+            if (cell.record >= 0 && g_records[size_t(cell.record)].releasing) ++releasing;
         for (size_t rank = 0; rank < touched.size(); ++rank)
         {
             Record& r = g_records[size_t(touched[rank])];
             if (r.cell >= 0) continue;
-            int best = -1;
-            uint32_t oldest = frame;
+            int best = -1, fading = -1;
+            uint32_t oldest = frame, oldestShown = frame;
             for (size_t c = 0; c < g_cells.size(); ++c)
             {
                 const Cell& cell = g_cells[c];
                 if (cell.record < 0) { best = int(c); break; }
-                const uint32_t w = g_records[size_t(cell.record)].wanted;
-                if (w != frame && frame - w > kKeepFrames && w < oldest) { oldest = w; best = int(c); }
+                const Record& o = g_records[size_t(cell.record)];
+                const uint32_t w = o.wanted;
+                if (w == frame || frame - w <= kKeepFrames) continue;
+                // Shown last frame with some of its pattern: not free until its fade has run.
+                const bool shown = o.resident > 0.0f && frame - o.eased <= 1;
+                if (!shown && w < oldest) { oldest = w; best = int(c); }
+                if (shown && !o.releasing && w < oldestShown) { oldestShown = w; fading = int(c); }
             }
-            if (best < 0) break;
+            if (best < 0)
+            {
+                // A fade already running serves this cookie; else the oldest pattern shown starts one.
+                if (releasing > 0) --releasing;
+                else if (fading >= 0) g_records[size_t(g_cells[size_t(fading)].record)].releasing = true;
+                else break;
+                continue;
+            }
             Cell& cell = g_cells[size_t(best)];
-            if (cell.record >= 0) g_records[size_t(cell.record)].cell = -1;
+            if (cell.record >= 0)
+            {
+                Record& old = g_records[size_t(cell.record)];
+                old.cell = -1;
+                old.releasing = false;
+                old.resident = 0.0f;
+            }
             if (cell.asset) gfx->AssetRelease(cell.asset);
             cell = Cell{};
             cell.record = touched[rank];
@@ -581,16 +682,20 @@ namespace wxl::gfx::lights::cookies
         // taken in.
         PollMeans(gfx);
 
-        // Copy finished reads into their cells.
+        // Copy finished reads into their cells, kFillsPerFrame at a time: each is decoded and softened
+        // here, on the render thread; the rest wait, read, for the next frames.
         g_resident = g_pending = 0;
+        int fills = 0;
         for (size_t c = 0; c < g_cells.size(); ++c)
         {
             Cell& cell = g_cells[c];
             if (cell.record < 0) continue;
             if (cell.filled) { ++g_resident; continue; }
             const uint32_t state = gfx->AssetState(cell.asset);
-            if (state == WXL_GFX_ASSET_READY)
+            if (state == WXL_GFX_ASSET_READY && fills >= kFillsPerFrame) ++g_pending;
+            else if (state == WXL_GFX_ASSET_READY)
             {
+                ++fills;
                 size_t size = 0;
                 const void* bytes = gfx->AssetBytes(cell.asset, &size);
                 Record& r = g_records[size_t(cell.record)];
@@ -636,10 +741,10 @@ namespace wxl::gfx::lights::cookies
             const bool filled = r.cell >= 0 && g_cells[size_t(r.cell)].filled;
             if (r.eased != frame)
             {
-                // Nothing jumps: the pattern fades in over the mean once resident (it can only leave
-                // with a cell no light wanted for kKeepFrames), and the manifest's mean eases to the file's.
+                // Nothing jumps: the pattern fades in over the mean once resident, and out again before
+                // its cell goes to another cookie (releasing); the manifest's mean eases to the file's.
                 r.eased = frame;
-                r.resident = filled ? std::min(r.resident + step, 1.0f) : 0.0f;
+                r.resident = !filled ? 0.0f : (r.releasing ? std::max(r.resident - step, 0.0f) : std::min(r.resident + step, 1.0f));
                 if (r.target >= 0.0f)
                 {
                     const float a = std::min(step, 1.0f);
@@ -696,7 +801,10 @@ namespace wxl::gfx::lights::cookies
         ui::Slider("Cookie strength", &g_cfg.strength, 0.0f, 1.0f,
                    "How strongly the pattern shapes the light: 1 the baked transmittance, 0 no effect. Lower it if lamp patterns look too hard.");
         ui::Slider("Cookie floor", &g_cfg.floor, 0.0f, 0.5f,
-                   "The least a pattern lets through in any direction, for the light that leaks and bounces inside a fixture. Lower it for struts and pane grids that read clearly on walls and in the fog; 0 lets struts block completely.");
+                   "The least a pattern lets through in any direction, for the light that leaks and bounces inside a fixture. 0.2 keeps a lamp's cap and base from blacking out the wall beside it. Lower it for struts and pane grids that read harder on walls and in the fog; 0 lets struts block completely.");
+        if (ui::Slider("Cookie softness", &g_cfg.softness, 0.0f, 2.0f,
+                       "How soft the shadows of a lamp's own frame are. A flame or bulb is no point: a bar at distance b from a source of radius r throws a penumbra about 2 r / b radians wide (at most 0.6), where the bake drew a hard edge as seen from a point. 1 gives that penumbra, 0 the bake's own edges (one texel of smoothing), 2 twice as soft. Every cookie is read again once the slider rests."))
+            g_cfg.softness = std::clamp(g_cfg.softness, 0.0f, 2.0f);
         ui::Slider("Cookie on flames", &g_cfg.flame, 0.0f, 1.0f,
                    "How much of its pattern a flame light (torch, brazier, campfire, hearth, candle) takes. A flame is a volume, not the point the pattern was baked from, so its logs or bowl hide far less of it. 1 the full pattern.");
         ui::Slider("Cookie glass tint", &g_cfg.tint, 0.0f, 1.0f,

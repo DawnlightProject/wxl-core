@@ -361,7 +361,7 @@ namespace
         if (ui::Check("Model-table lights", &table,
                       "Includes lights the model table gives to street lamps, lanterns and candles that carry none.")) o.table = table != 0;
         ui::Slider("Gather radius", &o.radius, 10.0f, 150.0f,
-                   "How far around the camera lights are gathered, in yards. Up to 128 are used, the brightest and nearest first; a light leaving the set fades out over a second.");
+                   "How far around the camera lights are gathered, in yards. Up to 128 are used, the brightest and nearest first. A light chosen stays at least two seconds; one leaving the set fades out over a second and keeps its place until it is gone, and a newcomer fades in once a place is free, so no lamp pops. A lamp whose model the game stops animating (off screen) keeps its light for ten seconds; the model table's lamps stay while their model is loaded.");
         ui::Slider("Near-light cap (current fog)", &o.nearCap, 0.5f, 5.0f,
                    "The current fog's cap on a lamp's glow right next to its source, in multiples of its colour. The lit surfaces have no cap: the curve at the end handles bright light.");
         ui::Slider("Brightest light (current fog)", &o.maxPeak, 0.5f, 10.0f,
@@ -403,9 +403,13 @@ namespace
         ui::Check("Dither", &h.dither, "Blue-noise dither against banding in dark gradients on the 8-bit screen.");
         ui::Separator();
         ui::Slider("Lamp intensity", &o.gain, 0.0f, 4.0f,
-                   "Every lamp's brightness, times this. 1 is the families' physical-ish intensity: a torch lights the ground to the game's white at about two yards and fades into the night by ten.");
+                   "Every lamp's brightness, times this. At 0.35 a torch lights the ground to about 0.4 of the game's white at two yards, bright beside the game's own night light, and fades into the night within about ten. 1 is the families' full intensity: white at two yards. A lamp's reach follows its brightness.");
+        ui::Slider("Lamps by day", &o.dayGain, 0.0f, 1.0f,
+                   "How strong a lamp outside every building is by full day, against the night: the eye adapted to the sun sees a street lamp far weaker. Follows the sun through dusk and dawn; lamps inside rooms keep their full strength. 1 lamps are as strong by day as by night.");
         ui::Slider("Warmth adaptation", &o.adaptation, 0.0f, 1.0f,
                    "How much the eye adapts to warm light. 0 shows each lamp at its true colour temperature (a candle deep orange); higher moves them towards white, as a room lit by lamps looks after a while.");
+        ui::Slider("Warm colour cap", &o.warmthCap, 0.0f, 4.0f,
+                   "How far a warm lamp's red may run past its brightness. A flame's colour at full brightness is mostly red, and on reddish ground or stone the red channel alone meets the curve: the pool reads red, not orange. This eases the strongest channel back, keeping the brightness: lower gives yellower pools, higher redder ones, 0 no cap. Magic colours are never capped.");
         ui::Slider("Light cutoff", &o.cutoff, 0.002f, 0.05f,
                    "The brightness where a lamp's reach ends, smoothly. Lower lets light carry further (and costs more); higher keeps pools tighter.");
         ui::Slider("Carried light core (yards)", &o.carriedCore, 0.0f, 2.0f,

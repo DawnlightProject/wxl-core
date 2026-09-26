@@ -53,7 +53,10 @@ namespace
     std::vector<float> g_familySize;
 
     /// A family's angular profile and the radius of its glowing source, yards: the flame, not the
-    /// fixture. A small source keeps the shadows of the fixture's own cage or bracket crisp.
+    /// fixture. It is how soft the fixture's own shadows are: a cage bar a tenth of a yard from a
+    /// flame this wide throws a penumbra of 2 x size / 0.1 radians, on shadow maps and on the baked
+    /// cookie alike (Cookies.cpp softens the cookie by it), so a size too small prints the lantern's
+    /// frame on the wall beside it as a hard, magnified silhouette.
     void ShapeOf(const std::string& family, wxl::gfx::lights::Profile& profile, float& size)
     {
         using P = wxl::gfx::lights::Profile;
@@ -61,7 +64,7 @@ namespace
         static const Shape kShapes[] = {
             { "candle", P::Flame, 0.012f },     { "chandelier", P::None, 0.25f }, { "torch", P::Flame, 0.12f },
             { "brazier", P::Flame, 0.35f },     { "campfire", P::Flame, 0.5f },   { "hearth", P::Flame, 0.3f },
-            { "fire", P::Flame, 0.3f },         { "lantern", P::Cage, 0.02f },    { "streetlamp", P::Downlight, 0.04f },
+            { "fire", P::Flame, 0.3f },         { "lantern", P::Cage, 0.04f },    { "streetlamp", P::Downlight, 0.04f },
             { "greenlamp", P::Cage, 0.03f },    { "walllight", P::Grille, 0.05f },
         };
         profile = P::None;
@@ -223,6 +226,17 @@ namespace wxl::gfx::lights::table
     }
 
     uint32_t Rows() { return uint32_t(g_rows.size()); }
+
+    bool SourceShape(uint64_t stem, uint32_t row, float& size, uint32_t& family)
+    {
+        if (!g_loaded) Load();
+        const auto it = g_byStem.find(stem);
+        if (it == g_byStem.end() || row >= it->second.second) return false;
+        const Entry& e = g_rows[it->second.first + row];
+        size = g_familySize[e.family];
+        family = e.familyId;
+        return true;
+    }
 
     size_t Collect(const float center[3], float radius, uint32_t maxStale, Light* out, size_t cap, Stats* stats)
     {
